@@ -29,12 +29,16 @@ class LibraryListBox : public juce::ListBox
 {
 public:
     LibraryListBox(AcestepAudioProcessorEditor& e, LibraryListModel& m);
+    void mouseDown(const juce::MouseEvent& e) override;
     void mouseDrag(const juce::MouseEvent& e) override;
     void mouseUp(const juce::MouseEvent& e)   override;
 
 private:
     AcestepAudioProcessorEditor& editor_;
     bool dragStarted_{ false };
+    // Row captured at mouseDown — used as the drag source in mouseDrag so
+    // the source row doesn't change as the cursor moves during the drag.
+    int  dragRow_{ -1 };
 };
 
 // ══════════════════════════════════════════════════════════════════════════════

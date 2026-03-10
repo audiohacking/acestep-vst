@@ -94,31 +94,52 @@ LibraryListBox::LibraryListBox(AcestepAudioProcessorEditor& e, LibraryListModel&
     setColour(juce::ListBox::backgroundColourId, AcestepColours::panel);
 }
 
+void LibraryListBox::mouseDown(const juce::MouseEvent& e)
+{
+    // Record which row was pressed so that mouseDrag can start the OS drag
+    // from the correct source row even if the cursor has moved by then.
+    dragRow_ = getRowContainingPosition(e.x, e.y);
+    ListBox::mouseDown(e);
+}
+
 void LibraryListBox::mouseDrag(const juce::MouseEvent& e)
 {
-    if (dragStarted_) { ListBox::mouseDrag(e); return; }
+    // Once the OS drag session is active, return early to suppress base-class
+    // handling that could change selection or scroll during the drag.
+    if (dragStarted_) return;
+
     if (e.getDistanceFromDragStart() < 10) { ListBox::mouseDrag(e); return; }
 
-    const int row = getRowContainingPosition(e.x, e.y);
-    const auto& entries = editor_.getCachedLibrary();
-    if (row < 0 || row >= static_cast<int>(entries.size())) { ListBox::mouseDrag(e); return; }
+    // Use the row recorded at mouseDown — not the current cursor position,
+    // which may have shifted to an adjacent row during the drag gesture.
+    if (dragRow_ < 0) { ListBox::mouseDrag(e); return; }
 
-    juce::String path = entries[static_cast<size_t>(row)].file.getFullPathName();
+    const auto& entries = editor_.getCachedLibrary();
+    if (dragRow_ >= static_cast<int>(entries.size())) { ListBox::mouseDrag(e); return; }
+
+    const juce::String path = entries[static_cast<size_t>(dragRow_)].file.getFullPathName();
     if (path.isEmpty()) { ListBox::mouseDrag(e); return; }
 
-    auto* container = juce::DragAndDropContainer::findParentDragContainerFor(this);
+    auto* container  = juce::DragAndDropContainer::findParentDragContainerFor(this);
     auto* editorComp = findParentComponentOfClass<AcestepAudioProcessorEditor>();
     juce::Component* src = editorComp ? static_cast<juce::Component*>(editorComp)
                                       : static_cast<juce::Component*>(this);
-    if (container && container->performExternalDragDropOfFiles(juce::StringArray(path), false, src))
+
+    if (container && container->performExternalDragDropOfFiles(
+            juce::StringArray(path), /*canMoveFiles=*/false, src))
+    {
         dragStarted_ = true;
+    }
     else
+    {
         ListBox::mouseDrag(e);
+    }
 }
 
 void LibraryListBox::mouseUp(const juce::MouseEvent& e)
 {
     dragStarted_ = false;
+    dragRow_     = -1;
     ListBox::mouseUp(e);
 }
 
@@ -647,7 +668,7 @@ void AcestepAudioProcessorEditor::onInsertDawClicked()
     if (!file.existsAsFile()) { showFeedback("File not found."); return; }
 
     // Reveal the file in Finder/Explorer so the user can drag it directly into
-    // the DAW timeline at the desired position.  Also copy the path to the
+    // the DAW timeline at the desired position. Also copy the path to the
     // clipboard as a convenience fallback.
     file.revealToUser();
     juce::SystemClipboard::copyTextToClipboard(file.getFullPathName());
