@@ -1,4 +1,4 @@
-# ACE-Step VST — root CMake
+# acestep-vst — root CMake
 cmake_minimum_required(VERSION 3.22)
 project(AcestepVST VERSION 0.1.0)
 

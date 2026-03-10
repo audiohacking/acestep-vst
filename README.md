@@ -1,11 +1,11 @@
-# ACE-Step VST
+# acestep-vst
 
 Standalone **AU** and **VST3** plugin for **macOS (Apple Silicon)** that runs local AI music generation directly in your DAW — no server, no cloud, no AceForge API. Powered by [acestep.cpp](https://github.com/ServeurpersoCom/acestep.cpp).
 
 ## Features
 
 - **Text-to-Music** — type a prompt, pick duration and quality, click Generate.
-- **Cover / Repaint mode** — use any WAV/MP3 as a reference; ACE-Step transforms it according to your prompt.
+- **Cover / Repaint mode** — use any WAV/MP3 as a reference; the underlying model transforms it according to your prompt.
 - **BPM auto-detect** — reads BPM from the DAW playhead automatically.
 - **Generation queue / library** — browse, play, loop, delete, and drag previous generations directly into your DAW timeline.
 - **Import & drag-drop** — import external WAV/MP3 files into the library, or drag them from Finder onto the plugin window to use as a cover reference.

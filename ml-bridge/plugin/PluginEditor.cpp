@@ -760,7 +760,7 @@ void AcestepAudioProcessorEditor::paint(juce::Graphics& g)
     // Title text
     g.setColour(AcestepColours::textMain);
     g.setFont(juce::Font(juce::FontOptions().withPointHeight(18.0f).withStyle("Bold")));
-    g.drawText("ACE-Step", 12, 4, 200, 26, juce::Justification::centredLeft);
+    g.drawText("acestep-vst", 12, 4, 200, 26, juce::Justification::centredLeft);
 
     // File-drag-over highlight
     if (fileDragHighlight_)

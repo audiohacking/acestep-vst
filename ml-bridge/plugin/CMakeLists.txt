@@ -1,8 +1,8 @@
-# ACE-Step VST/AU plugin — AU + VST3 (macOS target)
+# acestep-vst — AU + VST3 (macOS target)
 cmake_minimum_required(VERSION 3.22)
 
 if(NOT APPLE)
-  message(STATUS "ACE-Step plugin: skipping (macOS only for now)")
+  message(STATUS "acestep-vst: skipping (macOS only for now)")
   return()
 endif()
 
@@ -27,7 +27,7 @@ juce_add_plugin(AcestepVST
   PLUGIN_MANUFACTURER_CODE AuHk
   PLUGIN_CODE AcSt
   FORMATS AU VST3
-  PRODUCT_NAME "ACE-Step"
+  PRODUCT_NAME "acestep-vst"
   COPY_PLUGIN_AFTER_BUILD FALSE
 )
 

@@ -1,6 +1,6 @@
-# ACE-Step VST — Roadmap
+# acestep-vst — Roadmap
 
-Tracks planned features for the standalone **ACE-Step** AU/VST3 plugin powered by
+Tracks planned features for the standalone **acestep-vst** AU/VST3 plugin powered by
 [acestep.cpp](https://github.com/ServeurpersoCom/acestep.cpp).
 
 ---
@@ -10,7 +10,7 @@ Tracks planned features for the standalone **ACE-Step** AU/VST3 plugin powered b
 - [x] Add `acestep.cpp` as `vendor/` git submodule.
 - [x] Remove AceForge HTTP server dependency entirely.
 - [x] Replace `AceForgeClient` HTTP pipeline with `juce::ChildProcess` subprocess pipeline (`ace-qwen3` → `dit-vae`).
-- [x] **Rename plugin** from "AceForge Bridge" to **"ACE-Step"** (`AcestepVST` CMake target, `AcestepAudioProcessor` class).
+- [x] **Rename plugin** from "AceForge Bridge" to **"acestep-vst"** (`AcestepVST` CMake target, `AcestepAudioProcessor` class).
 - [x] Enable `JUCE_USE_MP3AUDIOFORMAT` to decode MP3 output from `dit-vae`.
 - [x] Persist binary/model/output paths in DAW project state.
 

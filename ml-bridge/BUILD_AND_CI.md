@@ -1,4 +1,4 @@
-# Build and CI — ACE-Step VST
+# Build and CI — acestep-vst
 
 ## Local build (macOS)
 
