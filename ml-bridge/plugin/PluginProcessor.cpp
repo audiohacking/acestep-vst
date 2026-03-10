@@ -425,7 +425,7 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
         return;
     }
     lmProc.waitForProcessToFinish(kLmTimeoutMs);
-    const int lmExit = lmProc.getExitCode();
+    const int lmExit = static_cast<int>(lmProc.getExitCode());
     logTrace("ace-qwen3 exit=" + juce::String(lmExit));
     if (lmExit != 0)
     {
@@ -487,7 +487,7 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
         return;
     }
     ditProc.waitForProcessToFinish(kDitTimeoutMs);
-    const int ditExit = ditProc.getExitCode();
+    const int ditExit = static_cast<int>(ditProc.getExitCode());
     logTrace("dit-vae exit=" + juce::String(ditExit));
     if (ditExit != 0)
     {
@@ -513,7 +513,7 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
     {
         juce::Array<juce::File> found;
         tmpDir.findChildFiles(found, juce::File::findFiles, false,
-                              kAudioExts.joinIntoString(";", "*."));
+                              "*." + kAudioExts.joinIntoString(";*."));
         if (!found.isEmpty())
         {
             outputFile = found[0];
@@ -751,14 +751,14 @@ void AcestepAudioProcessor::decodeAndPushAudio(const std::vector<uint8_t>& bytes
             if (outStream)
             {
                 juce::WavAudioFormat wf;
-                auto opts = juce::AudioFormatWriterOptions{}
-                                .withSampleRate(fileSR)
-                                .withNumChannels(numCh)
-                                .withBitsPerSample(24);
                 // createWriterFor takes ownership of the raw stream pointer;
                 // release() gives it up so the unique_ptr won't double-delete.
                 auto* rawStream = outStream.release();
-                auto* writerRaw = wf.createWriterFor(rawStream, opts);
+                // args: stream, sampleRate, numChannels, bitsPerSample, metadata, qualityOption
+                JUCE_BEGIN_IGNORE_WARNINGS_GCC_LIKE ("-Wdeprecated-declarations")
+                auto* writerRaw = wf.createWriterFor(rawStream, fileSR,
+                                                     static_cast<unsigned int>(numCh), 24, {}, 0);
+                JUCE_END_IGNORE_WARNINGS_GCC_LIKE
                 if (writerRaw)
                 {
                     std::unique_ptr<juce::AudioFormatWriter> writer(writerRaw);
@@ -796,7 +796,7 @@ void AcestepAudioProcessor::handleAsyncUpdate()
     {
         juce::ScopedLock l(pendingPreviewLock_);
         previewFile = pendingPreviewFile_;
-        pendingPreviewFile_ = {};
+        pendingPreviewFile_ = juce::File();
     }
     if (previewFile.existsAsFile())
     {
