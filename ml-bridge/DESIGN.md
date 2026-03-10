@@ -1,4 +1,4 @@
-# AceForge Bridge — Design & usage plan
+# acestep-vst — Design & usage plan (historical)
 
 Design and usage plan for the plugin, and concepts we can borrow from the ACE Studio approach.
 
@@ -137,7 +137,7 @@ We are **not** copying: ARA, stem splitting, voice cloning, or the full ACE Stud
 ### Crash and error visibility
 
 - **Double-buffer handoff:** The message thread must not overwrite the buffer the audio thread is reading. We use two buffers and alternate (`pendingPlaybackBuffer_[0]` / `[1]`, `nextWriteIndex_`); the message thread always writes to the “other” buffer.
-- **Logging:** Errors are written to `getStatusText()` / `getLastError()` and also to **JUCE Logger** and **~/Library/Logs/AceForgeBridge.log** (and stderr in Debug). If the host crashes, check that log file and the DAW’s crash report (e.g. Console.app on macOS).
+- **Logging:** Errors are written to `getStatusText()` / `getLastError()` and also to **JUCE Logger** and **~/Library/Logs/AcestepVST.log** (and stderr in Debug). If the host crashes, check that log file and the DAW’s crash report (e.g. Console.app on macOS).
 
 ---
 
@@ -145,7 +145,7 @@ We are **not** copying: ARA, stem splitting, voice cloning, or the full ACE Stud
 
 We are **not** bound to realtime DSP-only. The plugin also acts as a **library** of generations and lets users **drag audio into the DAW** via the OS drag-and-drop API:
 
-- **Library:** On each successful generation we save a WAV to `~/Library/Application Support/AceForgeBridge/Generations/` (e.g. `gen_YYYYMMDD_HHMMSS.wav`) and keep feeding the realtime playback FIFO for preview.
+- **Library:** On each successful generation we save a WAV to `~/Library/Application Support/AcestepVST/Generations/` (e.g. `gen_YYYYMMDD_HHMMSS.wav`) and keep feeding the realtime playback FIFO for preview.
 - **UI:** A "Library" list in the editor shows current and previous generations (all `.wav` files in that folder, newest first).
 - **Drag into DAW:** JUCE's **`DragAndDropContainer::performExternalDragDropOfFiles(...)`** starts a native OS file drag. When the user drags a library row, we pass the WAV path; the user can drop it onto the DAW timeline (or anywhere). The DAW typically creates a clip from the dropped file. No VST/AU "timeline insert" API is required.
 
