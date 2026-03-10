@@ -1,3 +1,5 @@
+<img width="180" alt="logo" src="https://github.com/user-attachments/assets/ae211c8f-eb2e-4434-a657-028e876f82e3" />
+
 # acestep-vst
 
 Standalone **AU** and **VST3** plugin for local AI music generation in your DAW — no servers, no cloud, no APIs. 
