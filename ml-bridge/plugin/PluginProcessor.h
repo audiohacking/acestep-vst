@@ -44,15 +44,23 @@ public:
 
     void handleAsyncUpdate() override;
 
+    // ── Global settings persistence (survives across all DAW sessions) ────────
+    void saveSettingsToGlobalConfig() const;
+    void loadSettingsFromGlobalConfig();
+
     // ── Generation ────────────────────────────────────────────────────────────
     // coverFile : non-empty → cover / repaint mode (pass --src-audio to dit-vae).
     // bpm       : 0 = auto-detect from DAW playhead.
+    // lyrics    : lyrics text; use "[Instrumental]" for no vocals.
+    // seed      : -1 = random.
     void startGeneration(const juce::String& prompt,
                          int   durationSeconds = 10,
                          int   inferenceSteps  = 8,
                          juce::File coverFile  = {},
                          float coverStrength   = 0.5f,
-                         float bpm             = 0.0f);
+                         float bpm             = 0.0f,
+                         const juce::String& lyrics = "[Instrumental]",
+                         int   seed            = -1);
 
     // ── Path configuration (persisted in DAW project state) ──────────────────
     void setBinariesPath(const juce::String& path);
@@ -92,7 +100,8 @@ public:
 
 private:
     void runGenerationThread(juce::String prompt, int durationSec, int inferenceSteps,
-                             juce::File coverFile, float coverStrength, float bpm);
+                             juce::File coverFile, float coverStrength, float bpm,
+                             juce::String lyrics, int seed);
 
     // Decode raw audio bytes and push to playback + loop buffers.
     // If promptForLibrary is non-empty the result is saved to the library and

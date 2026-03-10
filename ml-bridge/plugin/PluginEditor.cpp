@@ -94,31 +94,52 @@ LibraryListBox::LibraryListBox(AcestepAudioProcessorEditor& e, LibraryListModel&
     setColour(juce::ListBox::backgroundColourId, AcestepColours::panel);
 }
 
+void LibraryListBox::mouseDown(const juce::MouseEvent& e)
+{
+    // Record which row was pressed so that mouseDrag can start the OS drag
+    // from the correct source row even if the cursor has moved by then.
+    dragRow_ = getRowContainingPosition(e.x, e.y);
+    ListBox::mouseDown(e);
+}
+
 void LibraryListBox::mouseDrag(const juce::MouseEvent& e)
 {
-    if (dragStarted_) { ListBox::mouseDrag(e); return; }
+    // Once the OS drag session is active, return early to suppress base-class
+    // handling that could change selection or scroll during the drag.
+    if (dragStarted_) return;
+
     if (e.getDistanceFromDragStart() < 10) { ListBox::mouseDrag(e); return; }
 
-    const int row = getRowContainingPosition(e.x, e.y);
-    const auto& entries = editor_.getCachedLibrary();
-    if (row < 0 || row >= static_cast<int>(entries.size())) { ListBox::mouseDrag(e); return; }
+    // Use the row recorded at mouseDown — not the current cursor position,
+    // which may have shifted to an adjacent row during the drag gesture.
+    if (dragRow_ < 0) { ListBox::mouseDrag(e); return; }
 
-    juce::String path = entries[static_cast<size_t>(row)].file.getFullPathName();
+    const auto& entries = editor_.getCachedLibrary();
+    if (dragRow_ >= static_cast<int>(entries.size())) { ListBox::mouseDrag(e); return; }
+
+    const juce::String path = entries[static_cast<size_t>(dragRow_)].file.getFullPathName();
     if (path.isEmpty()) { ListBox::mouseDrag(e); return; }
 
-    auto* container = juce::DragAndDropContainer::findParentDragContainerFor(this);
+    auto* container  = juce::DragAndDropContainer::findParentDragContainerFor(this);
     auto* editorComp = findParentComponentOfClass<AcestepAudioProcessorEditor>();
     juce::Component* src = editorComp ? static_cast<juce::Component*>(editorComp)
                                       : static_cast<juce::Component*>(this);
-    if (container && container->performExternalDragDropOfFiles(juce::StringArray(path), false, src))
+
+    if (container && container->performExternalDragDropOfFiles(
+            juce::StringArray(path), /*canMoveFiles=*/false, src))
+    {
         dragStarted_ = true;
+    }
     else
+    {
         ListBox::mouseDrag(e);
+    }
 }
 
 void LibraryListBox::mouseUp(const juce::MouseEvent& e)
 {
     dragStarted_ = false;
+    dragRow_     = -1;
     ListBox::mouseUp(e);
 }
 
@@ -130,7 +151,7 @@ AcestepAudioProcessorEditor::AcestepAudioProcessorEditor(AcestepAudioProcessor& 
     : AudioProcessorEditor(&p), processorRef(p),
       libraryListModel_(*this), libraryList_(*this, libraryListModel_)
 {
-    setSize(500, 660);
+    setSize(500, 740);
 
     // ── Tab buttons ──────────────────────────────────────────────────────────
     for (auto* b : { &tabGenerate_, &tabLibrary_, &tabSettings_ })
@@ -151,16 +172,29 @@ AcestepAudioProcessorEditor::AcestepAudioProcessorEditor(AcestepAudioProcessor& 
     styleLabel(promptLabel_); promptLabel_.setText("Prompt:", juce::dontSendNotification);
     addChildComponent(promptLabel_);
 
-    promptEditor_.setMultiLine(false);
-    promptEditor_.setReturnKeyStartsNewLine(false);
+    promptEditor_.setMultiLine(true, true);
+    promptEditor_.setReturnKeyStartsNewLine(true);
     promptEditor_.setText("upbeat electronic beat");
-    promptEditor_.setTextToShowWhenEmpty("Describe the music (e.g. calm piano melody, 10s)",
+    promptEditor_.setTextToShowWhenEmpty("Describe the music style, mood, instrumentation…",
                                          AcestepColours::textDim);
     promptEditor_.setColour(juce::TextEditor::backgroundColourId,  AcestepColours::panel);
     promptEditor_.setColour(juce::TextEditor::textColourId,        AcestepColours::textMain);
     promptEditor_.setColour(juce::TextEditor::outlineColourId,     AcestepColours::accentDim);
     promptEditor_.setColour(juce::TextEditor::focusedOutlineColourId, AcestepColours::accent);
     addChildComponent(promptEditor_);
+
+    styleLabel(lyricsLabel_); lyricsLabel_.setText("Lyrics (optional):", juce::dontSendNotification);
+    addChildComponent(lyricsLabel_);
+
+    lyricsEditor_.setMultiLine(true, true);
+    lyricsEditor_.setReturnKeyStartsNewLine(true);
+    lyricsEditor_.setTextToShowWhenEmpty("[Instrumental]  — or enter verse/chorus lyrics here",
+                                         AcestepColours::textDim);
+    lyricsEditor_.setColour(juce::TextEditor::backgroundColourId,  AcestepColours::panel);
+    lyricsEditor_.setColour(juce::TextEditor::textColourId,        AcestepColours::textMain);
+    lyricsEditor_.setColour(juce::TextEditor::outlineColourId,     AcestepColours::accentDim);
+    lyricsEditor_.setColour(juce::TextEditor::focusedOutlineColourId, AcestepColours::accent);
+    addChildComponent(lyricsEditor_);
 
     styleLabel(durationLabel_); durationLabel_.setText("Duration:", juce::dontSendNotification);
     addChildComponent(durationLabel_);
@@ -192,6 +226,15 @@ AcestepAudioProcessorEditor::AcestepAudioProcessorEditor(AcestepAudioProcessor& 
     bpmEditor_.setColour(juce::TextEditor::outlineColourId,    AcestepColours::accentDim);
     bpmEditor_.onTextChange = [this] { bpmAutoUpdated_ = false; };
     addChildComponent(bpmEditor_);
+
+    styleLabel(seedLabel_); seedLabel_.setText("Seed:", juce::dontSendNotification);
+    addChildComponent(seedLabel_);
+    seedEditor_.setInputRestrictions(10, "0123456789");
+    seedEditor_.setTextToShowWhenEmpty("random", AcestepColours::textDim);
+    seedEditor_.setColour(juce::TextEditor::backgroundColourId, AcestepColours::panel);
+    seedEditor_.setColour(juce::TextEditor::textColourId,       AcestepColours::textMain);
+    seedEditor_.setColour(juce::TextEditor::outlineColourId,    AcestepColours::accentDim);
+    addChildComponent(seedEditor_);
 
     styleSmallButton(genModeButton_, AcestepColours::accent, AcestepColours::accentDim);
     addChildComponent(genModeButton_);
@@ -448,6 +491,19 @@ void AcestepAudioProcessorEditor::timerCallback()
         if (currentTab_ == TabLibrary) libraryList_.updateContent();
     }
 
+    // Detect successful generation — switch to Library and select newest entry.
+    const auto state = processorRef.getState();
+    if (state == AcestepAudioProcessor::State::Succeeded
+        && lastState_ != AcestepAudioProcessor::State::Succeeded)
+    {
+        refreshLibraryCache();
+        libraryList_.updateContent();
+        if (!libraryCache_.empty())
+            libraryList_.selectRow(0, true, false); // newest is first (sorted by time desc)
+        selectTab(TabLibrary);
+    }
+    lastState_ = state;
+
     updateStatusFromProcessor();
 }
 
@@ -505,9 +561,13 @@ void AcestepAudioProcessorEditor::refreshLibraryCache()
 
 void AcestepAudioProcessorEditor::onGenerateClicked()
 {
-    const int durationSec = durationCombo_.getSelectedId();
-    const int steps       = stepsCombo_.getSelectedId();
-    const float bpm       = bpmEditor_.getText().getFloatValue();
+    const int durationSec  = durationCombo_.getSelectedId();
+    const int steps        = stepsCombo_.getSelectedId();
+    const float bpm        = bpmEditor_.getText().getFloatValue();
+    const juce::String seedText = seedEditor_.getText();
+    const int seed         = seedText.isEmpty() ? -1 : seedText.getIntValue();
+
+    const juce::String lyrics = lyricsEditor_.getText().trim();
 
     juce::File coverFile;
     float coverStrength = 0.5f;
@@ -523,7 +583,9 @@ void AcestepAudioProcessorEditor::onGenerateClicked()
         steps       > 0 ? steps       : 8,
         coverFile,
         coverStrength,
-        bpm > 0.0f ? bpm : static_cast<float>(processorRef.getHostBpm()));
+        bpm > 0.0f ? bpm : static_cast<float>(processorRef.getHostBpm()),
+        lyrics,
+        seed);
 }
 
 void AcestepAudioProcessorEditor::onPreviewClicked()
@@ -605,19 +667,12 @@ void AcestepAudioProcessorEditor::onInsertDawClicked()
     const juce::File& file = libraryCache_[static_cast<size_t>(row)].file;
     if (!file.existsAsFile()) { showFeedback("File not found."); return; }
 
+    // Reveal the file in Finder/Explorer so the user can drag it directly into
+    // the DAW timeline at the desired position. Also copy the path to the
+    // clipboard as a convenience fallback.
+    file.revealToUser();
     juce::SystemClipboard::copyTextToClipboard(file.getFullPathName());
-
-#if JUCE_MAC
-    juce::ChildProcess proc;
-    juce::StringArray args;
-    args.add("open"); args.add("-a"); args.add("Logic Pro"); args.add(file.getFullPathName());
-    if (proc.start(args, 0))
-        showFeedback("Opened in Logic Pro. Drag from there into your project.");
-    else
-        showFeedback("Path copied. Use Reveal in Finder and drag to your DAW.");
-#else
-    showFeedback("Path copied to clipboard. Drag into your DAW manually.");
-#endif
+    showFeedback("Revealed in Finder \xe2\x80\x94 drag into your DAW timeline. Path also copied.");
 }
 
 void AcestepAudioProcessorEditor::onRevealClicked()
@@ -782,8 +837,9 @@ void AcestepAudioProcessorEditor::hideAllTabComponents()
 {
     for (auto* c : std::initializer_list<juce::Component*>{
         &promptLabel_, &promptEditor_,
+        &lyricsLabel_, &lyricsEditor_,
         &durationLabel_, &durationCombo_, &stepsLabel_, &stepsCombo_,
-        &bpmLabel_, &bpmEditor_,
+        &bpmLabel_, &bpmEditor_, &seedLabel_, &seedEditor_,
         &genModeButton_, &coverModeButton_,
         &refFileLabel_, &browseRefButton_, &clearRefButton_,
         &coverStrengthLabel_, &coverStrengthSlider_,
@@ -837,23 +893,31 @@ void AcestepAudioProcessorEditor::layoutGenerateTab(juce::Rectangle<int> r)
 {
     auto take = [&](int h) { auto row = r.removeFromTop(h); r.removeFromTop(4); return row; };
 
-    // Prompt
+    // Prompt (multiline)
     promptLabel_.setVisible(true);
-    promptLabel_.setBounds(take(16));
+    promptLabel_.setBounds(take(14));
     promptEditor_.setVisible(true);
-    promptEditor_.setBounds(take(24));
+    promptEditor_.setBounds(take(80));
+
+    // Lyrics (multiline, optional)
+    lyricsLabel_.setVisible(true);
+    lyricsLabel_.setBounds(take(14));
+    lyricsEditor_.setVisible(true);
+    lyricsEditor_.setBounds(take(56));
 
     // Duration + Steps
     auto row = take(24);
-    durationLabel_.setVisible(true); durationLabel_.setBounds(row.removeFromLeft(68));
-    durationCombo_.setVisible(true); durationCombo_.setBounds(row.removeFromLeft(70)); row.removeFromLeft(8);
-    stepsLabel_.setVisible(true);    stepsLabel_.setBounds(row.removeFromLeft(58));
+    durationLabel_.setVisible(true); durationLabel_.setBounds(row.removeFromLeft(64));
+    durationCombo_.setVisible(true); durationCombo_.setBounds(row.removeFromLeft(72)); row.removeFromLeft(8);
+    stepsLabel_.setVisible(true);    stepsLabel_.setBounds(row.removeFromLeft(56));
     stepsCombo_.setVisible(true);    stepsCombo_.setBounds(row);
 
-    // BPM
+    // BPM + Seed
     row = take(24);
-    bpmLabel_.setVisible(true); bpmLabel_.setBounds(row.removeFromLeft(40));
-    bpmEditor_.setVisible(true); bpmEditor_.setBounds(row.removeFromLeft(80));
+    bpmLabel_.setVisible(true);  bpmLabel_.setBounds(row.removeFromLeft(36));
+    bpmEditor_.setVisible(true); bpmEditor_.setBounds(row.removeFromLeft(72)); row.removeFromLeft(10);
+    seedLabel_.setVisible(true);  seedLabel_.setBounds(row.removeFromLeft(38));
+    seedEditor_.setVisible(true); seedEditor_.setBounds(row.removeFromLeft(80));
 
     // Mode
     row = take(26);
@@ -879,9 +943,9 @@ void AcestepAudioProcessorEditor::layoutGenerateTab(juce::Rectangle<int> r)
     generateButton_.setBounds(r.removeFromTop(30));
     r.removeFromTop(6);
 
-    // Status
+    // Status — fill all remaining space (minimum 40px)
     statusLabel_.setVisible(true);
-    statusLabel_.setBounds(r.removeFromTop(60));
+    statusLabel_.setBounds(r.removeFromTop(juce::jmax(40, r.getHeight())));
 }
 
 void AcestepAudioProcessorEditor::layoutLibraryTab(juce::Rectangle<int> r)

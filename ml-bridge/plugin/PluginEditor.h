@@ -29,12 +29,16 @@ class LibraryListBox : public juce::ListBox
 {
 public:
     LibraryListBox(AcestepAudioProcessorEditor& e, LibraryListModel& m);
+    void mouseDown(const juce::MouseEvent& e) override;
     void mouseDrag(const juce::MouseEvent& e) override;
     void mouseUp(const juce::MouseEvent& e)   override;
 
 private:
     AcestepAudioProcessorEditor& editor_;
     bool dragStarted_{ false };
+    // Row captured at mouseDown — used as the drag source in mouseDrag so
+    // the source row doesn't change as the cursor moves during the drag.
+    int  dragRow_{ -1 };
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -85,12 +89,16 @@ private:
     // ── Generate tab ──────────────────────────────────────────────────────────
     juce::Label      promptLabel_;
     juce::TextEditor promptEditor_;
+    juce::Label      lyricsLabel_;
+    juce::TextEditor lyricsEditor_;
     juce::Label      durationLabel_;
     juce::ComboBox   durationCombo_;
     juce::Label      stepsLabel_;
     juce::ComboBox   stepsCombo_;
     juce::Label      bpmLabel_;
     juce::TextEditor bpmEditor_;
+    juce::Label      seedLabel_;
+    juce::TextEditor seedEditor_;
     bool             bpmAutoUpdated_{ true };
 
     // Mode buttons — Text-to-Music vs Cover
@@ -142,6 +150,7 @@ private:
     // ── Library cache ─────────────────────────────────────────────────────────
     std::vector<AcestepAudioProcessor::LibraryEntry> libraryCache_;
     int  libraryRefreshTick_{ 0 };
+    AcestepAudioProcessor::State lastState_{ AcestepAudioProcessor::State::Idle };
 
     // ── Feedback ──────────────────────────────────────────────────────────────
     juce::String feedbackMsg_;
