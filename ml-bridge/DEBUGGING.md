@@ -1,4 +1,4 @@
-# Debugging AceForge Bridge (especially crashes when audio returns)
+# Debugging acestep-vst (especially crashes when audio returns)
 
 ## What happens when the API returns audio (the crash-prone path)
 
@@ -26,7 +26,7 @@ If the process is killed (SIGKILL/crash), the **log file** only shows what was a
 
 ## What you’ll see in the log
 
-Open **`~/Library/Logs/AceForgeBridge.log`** after a crash. You’ll see lines like:
+Open **`~/Library/Logs/AcestepVST.log`** after a crash. You’ll see lines like:
 
 ```
 ... TRACE: handleAsyncUpdate: start
@@ -61,7 +61,7 @@ After the DAW crashes:
 - Open **Console.app** (Applications → Utilities).
 - Sidebar: **Crash Reports** or **Log Reports**; or open **~/Library/Logs/DiagnosticReports/** in Finder.
 - Find the newest report for your host (e.g. `Ableton Live_2025-…crash` or `Logic Pro_…crash`).
-- Open it. The **“Crashed Thread”** section and **“Thread 0 Crashed”** backtrace show the exact frames. Look for `AceForge-Bridge` or `AceForgeBridge` in the stack.
+- Open it. The **“Crashed Thread”** section and **“Thread 0 Crashed”** backtrace show the exact frames. Look for `acestep-vst` or `AcestepVST` in the stack.
 
 ### 2. Run the DAW under lldb (full control)
 
@@ -97,7 +97,7 @@ Then inspect `daw.log` after a crash. This does **not** give a stack trace; the 
 
 | Goal | What to use |
 |------|-------------|
-| Last step before crash | `~/Library/Logs/AceForgeBridge.log` → last TRACE line |
+| Last step before crash | `~/Library/Logs/AcestepVST.log` → last TRACE line |
 | Exact crash line + stack | Crash report in Console / DiagnosticReports, or run DAW under `lldb` and use `bt` |
 
 Logic flow when audio returns: **background thread** → copies WAV into `pendingWavBytes_` and triggers async update → **message thread** decodes WAV, calls **pushSamplesToPlayback**, then optionally saves to library → **audio thread** in **processBlock** copies from the pending buffer into the FIFO and into the output. The crash is in one of these three places; the log + crash report together tell you which.

@@ -50,6 +50,7 @@ Tracks planned features for the standalone **acestep-vst** AU/VST3 plugin powere
 
 ## Phase 5 — Model management & first-run UX
 
+- [x] **First-run Settings tab** — plugin opens on Settings tab when binaries are not yet configured, guiding the user to set paths on first launch.
 - [ ] **Model presence detection** — scan model folder on startup; show clear warning in Settings if models are missing.
 - [ ] **Download wizard** — wrap `models.sh` with a progress panel inside the plugin UI.
 

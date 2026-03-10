@@ -1,4 +1,4 @@
-# Build and release AceForge-Bridge AU + VST3 (macOS); manufacturer AudioHacking
+# Build and release acestep-vst AU + VST3 (macOS); manufacturer AudioHacking
 name: Build and release plugins (macOS)
 
 on:
@@ -47,8 +47,8 @@ jobs:
         id: artefacts
         run: |
           set -e
-          AU=$(find build -name "AceForge-Bridge.component" -type d 2>/dev/null | head -1)
-          VST3=$(find build -name "AceForge-Bridge.vst3" -type d 2>/dev/null | head -1)
+          AU=$(find build -name "acestep-vst.component" -type d 2>/dev/null | head -1)
+          VST3=$(find build -name "acestep-vst.vst3" -type d 2>/dev/null | head -1)
           [ -n "$AU" ] || AU=$(find build -name "*.component" -type d 2>/dev/null | head -1)
           [ -n "$VST3" ] || VST3=$(find build -name "*.vst3" -type d 2>/dev/null | head -1)
           echo "au_path=$AU" >> $GITHUB_OUTPUT
@@ -64,9 +64,9 @@ jobs:
       - name: Create zip archives for release
         run: |
           mkdir -p release-artefacts
-          cp -R "${{ steps.artefacts.outputs.au_path }}" "release-artefacts/AceForge-Bridge.component"
-          cp -R "${{ steps.artefacts.outputs.vst3_path }}" "release-artefacts/AceForge-Bridge.vst3"
-          echo "zip_path=release-artefacts/AceForgeBridge-macOS-AU-VST3.zip" >> $GITHUB_ENV
+          cp -R "${{ steps.artefacts.outputs.au_path }}" "release-artefacts/acestep-vst.component"
+          cp -R "${{ steps.artefacts.outputs.vst3_path }}" "release-artefacts/acestep-vst.vst3"
+          echo "zip_path=release-artefacts/AcestepVST-macOS-AU-VST3.zip" >> $GITHUB_ENV
 
       # Sign AU/VST3 (for zip and for pkg). Without secret: ad-hoc. With MACOS_SIGNING_IDENTITY (Developer ID Application): proper sign.
       - name: Codesign plugin bundles
@@ -76,32 +76,32 @@ jobs:
           IDENTITY="${MACOS_SIGNING_IDENTITY:--}"
           echo "Signing plugins with identity: $IDENTITY"
           if [ "$IDENTITY" = "-" ]; then
-            xcrun codesign --force --sign - --deep "release-artefacts/AceForge-Bridge.component"
-            xcrun codesign --force --sign - --deep "release-artefacts/AceForge-Bridge.vst3"
+            xcrun codesign --force --sign - --deep "release-artefacts/acestep-vst.component"
+            xcrun codesign --force --sign - --deep "release-artefacts/acestep-vst.vst3"
           else
             xcrun codesign --force --sign "$IDENTITY" --options runtime --timestamp --deep \
-              "release-artefacts/AceForge-Bridge.component"
+              "release-artefacts/acestep-vst.component"
             xcrun codesign --force --sign "$IDENTITY" --options runtime --timestamp --deep \
-              "release-artefacts/AceForge-Bridge.vst3"
+              "release-artefacts/acestep-vst.vst3"
           fi
-          cd release-artefacts && zip -r "AceForgeBridge-macOS-AU-VST3.zip" "AceForge-Bridge.component" "AceForge-Bridge.vst3" && cd ..
+          cd release-artefacts && zip -r "AcestepVST-macOS-AU-VST3.zip" "acestep-vst.component" "acestep-vst.vst3" && cd ..
           echo "Plugin bundles signed; zip created."
 
       - name: Prepare pkg payload
         run: |
           mkdir -p payload/Library/Audio/Plug-Ins/Components
           mkdir -p payload/Library/Audio/Plug-Ins/VST3
-          cp -R "release-artefacts/AceForge-Bridge.component" "payload/Library/Audio/Plug-Ins/Components/"
-          cp -R "release-artefacts/AceForge-Bridge.vst3" "payload/Library/Audio/Plug-Ins/VST3/"
+          cp -R "release-artefacts/acestep-vst.component" "payload/Library/Audio/Plug-Ins/Components/"
+          cp -R "release-artefacts/acestep-vst.vst3" "payload/Library/Audio/Plug-Ins/VST3/"
 
       - name: Build macOS installer (.pkg)
         run: |
           pkgbuild \
             --root payload \
-            --identifier com.audiohacking.aceforge-bridge \
+            --identifier com.audiohacking.acestep-vst \
             --version 0.1.0 \
             --install-location / \
-            release-artefacts/AceForgeBridge-macOS-Installer.pkg
+            release-artefacts/AcestepVST-macOS-Installer.pkg
           echo "Installer places AU and VST3 in /Library/Audio/Plug-Ins/Components and /Library/Audio/Plug-Ins/VST3"
 
       # Sign the .pkg so macOS doesn't show "unidentified developer". Use Developer ID Installer cert.
@@ -114,11 +114,11 @@ jobs:
           IDENTITY="${IDENTITY:--}"
           if [ "$IDENTITY" != "-" ] && [ -n "$IDENTITY" ]; then
             echo "Signing installer pkg with identity: $IDENTITY"
-            mv release-artefacts/AceForgeBridge-macOS-Installer.pkg release-artefacts/AceForgeBridge-macOS-Installer-unsigned.pkg
+            mv release-artefacts/AcestepVST-macOS-Installer.pkg release-artefacts/AcestepVST-macOS-Installer-unsigned.pkg
             productsign --sign "$IDENTITY" --timestamp \
-              release-artefacts/AceForgeBridge-macOS-Installer-unsigned.pkg \
-              release-artefacts/AceForgeBridge-macOS-Installer.pkg
-            rm release-artefacts/AceForgeBridge-macOS-Installer-unsigned.pkg
+              release-artefacts/AcestepVST-macOS-Installer-unsigned.pkg \
+              release-artefacts/AcestepVST-macOS-Installer.pkg
+            rm release-artefacts/AcestepVST-macOS-Installer-unsigned.pkg
             echo "Installer pkg signed."
           else
             echo "No signing identity secret; installer pkg is unsigned (plugins are ad-hoc signed)."
@@ -130,8 +130,8 @@ jobs:
         with:
           tag_name: ${{ (github.event_name == 'release' && github.event.release.tag_name) || inputs.release_tag }}
           files: |
-            release-artefacts/AceForgeBridge-macOS-AU-VST3.zip
-            release-artefacts/AceForgeBridge-macOS-Installer.pkg
+            release-artefacts/AcestepVST-macOS-AU-VST3.zip
+            release-artefacts/AcestepVST-macOS-Installer.pkg
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -139,5 +139,5 @@ jobs:
         if: github.event_name != 'release' || github.event.release == null
         uses: actions/upload-artifact@v4
         with:
-          name: AceForgeBridge-macOS-plugins
+          name: AcestepVST-macOS-plugins
           path: release-artefacts/

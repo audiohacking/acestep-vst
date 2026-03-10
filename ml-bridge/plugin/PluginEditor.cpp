@@ -365,7 +365,9 @@ AcestepAudioProcessorEditor::AcestepAudioProcessorEditor(AcestepAudioProcessor& 
     outputPathEditor_.setText(processorRef.getOutputPath(), juce::dontSendNotification);
 
     refreshLibraryCache();
-    selectTab(TabGenerate);
+    // Open Settings on first run (binaries not yet configured) so the user can
+    // point the plugin at their acestep-cpp build and models directory.
+    selectTab(processorRef.areBinariesReady() ? TabGenerate : TabSettings);
     startTimerHz(4);
 }
 

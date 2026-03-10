@@ -18,7 +18,7 @@ Standalone **AU** and **VST3** plugin for local AI music generation in your DAW 
 
 1. Clone with submodules:
    ```bash
-   git clone --recurse-submodules https://github.com/audiohacking/aceforge-vst.git
+   git clone --recurse-submodules https://github.com/audiohacking/acestep-vst.git
    ```
 
 2. Build the JUCE plugin:
