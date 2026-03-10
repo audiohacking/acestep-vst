@@ -23,3 +23,8 @@ _codeql_detected_source_root
 
 # AceForgeClient object (local compile)
 ml-bridge/AceForgeClient/AceForgeClientMac.o
+
+# acestep.cpp submodule build artefacts
+vendor/acestep.cpp/build/
+vendor/acestep.cpp/models/
+vendor/acestep.cpp/checkpoints/
