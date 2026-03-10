@@ -10,128 +10,138 @@
 
 namespace
 {
+
+// ── Logging ───────────────────────────────────────────────────────────────────
+
 void writeToLogFile(const juce::String& message)
 {
-    juce::Logger::writeToLog("[AceForgeBridge] " + message);
+    juce::Logger::writeToLog("[AcestepVST] " + message);
 #if JUCE_DEBUG
-    std::cerr << "[AceForgeBridge] " << message.toRawUTF8() << std::endl;
+    std::cerr << "[AcestepVST] " << message.toRawUTF8() << std::endl;
 #endif
-    juce::File logDir = juce::File::getSpecialLocation(juce::File::userHomeDirectory).getChildFile("Library").getChildFile("Logs");
+    juce::File logDir = juce::File::getSpecialLocation(juce::File::userHomeDirectory)
+                            .getChildFile("Library").getChildFile("Logs");
     if (logDir.exists() || logDir.createDirectory())
     {
-        juce::File logFile = logDir.getChildFile("AceForgeBridge.log");
-        juce::String line = juce::Time::getCurrentTime().formatted("%Y-%m-%d %H:%M:%S") + " " + message + "\n";
+        juce::File logFile = logDir.getChildFile("AcestepVST.log");
+        juce::String line  = juce::Time::getCurrentTime().formatted("%Y-%m-%d %H:%M:%S")
+                           + " " + message + "\n";
         std::string path = logFile.getFullPathName().toStdString();
         std::ofstream f(path, std::ios::app);
-        if (f)
-        {
-            f << line.toRawUTF8();
-            f.flush();
-        }
+        if (f) { f << line.toRawUTF8(); f.flush(); }
     }
 }
 
-void logErrorToFileAndStderr(const juce::String& message)
-{
-    writeToLogFile("ERROR: " + message);
-}
+void logError(const juce::String& msg) { writeToLogFile("ERROR: " + msg); }
+void logTrace(const juce::String& msg) { writeToLogFile("TRACE: " + msg); }
 
-// Trace steps so after a crash you can open ~/Library/Logs/AceForgeBridge.log and see last step reached
-void logTrace(const juce::String& message)
-{
-    writeToLogFile("TRACE: " + message);
-}
+// ── State label ───────────────────────────────────────────────────────────────
 
-const char* stateToString(AceForgeBridgeAudioProcessor::State s)
+const char* stateToString(AcestepAudioProcessor::State s)
 {
     switch (s)
     {
-    case AceForgeBridgeAudioProcessor::State::Idle:       return "Idle";
-    case AceForgeBridgeAudioProcessor::State::Submitting: return "Generating lyrics & codes (LLM)…";
-    case AceForgeBridgeAudioProcessor::State::Running:    return "Synthesising audio (DiT+VAE)…";
-    case AceForgeBridgeAudioProcessor::State::Succeeded:  return "Ready";
-    case AceForgeBridgeAudioProcessor::State::Failed:     return "Failed";
+    case AcestepAudioProcessor::State::Idle:       return "Idle";
+    case AcestepAudioProcessor::State::Submitting: return "Generating lyrics & codes (LLM)\xe2\x80\xa6";
+    case AcestepAudioProcessor::State::Running:    return "Synthesising audio (DiT+VAE)\xe2\x80\xa6";
+    case AcestepAudioProcessor::State::Succeeded:  return "Ready";
+    case AcestepAudioProcessor::State::Failed:     return "Failed";
     }
     return "";
 }
 
-// Timeout constants for the two subprocess steps
-static constexpr int kLmTimeoutMs  = 300'000;  // ace-qwen3: 5 minutes
-static constexpr int kDitTimeoutMs = 600'000;  // dit-vae:   10 minutes
+// ── Subprocess timeouts ───────────────────────────────────────────────────────
+static constexpr int kLmTimeoutMs      = 300'000;  // ace-qwen3: 5 min
+static constexpr int kDitTimeoutMs     = 600'000;  // dit-vae:  10 min
+// ── Stereo channel count used throughout the playback pipeline ────────────────
+static constexpr int kNumOutputChannels = 2;
+// ── Supported audio extensions (in priority order) ────────────────────────────
+static const juce::StringArray kAudioExts{ "wav", "mp3" };
 
-// Audio formats produced by dit-vae (in priority order)
-static const juce::StringArray kSupportedAudioExts { "wav", "mp3" };
 } // namespace
 
-AceForgeBridgeAudioProcessor::AceForgeBridgeAudioProcessor()
+// ═════════════════════════════════════════════════════════════════════════════
+// Construction
+// ═════════════════════════════════════════════════════════════════════════════
+
+AcestepAudioProcessor::AcestepAudioProcessor()
     : AudioProcessor(BusesProperties()
 #if !JucePlugin_IsMidiEffect
 #if !JucePlugin_IsSynth
-                         .withInput("Input", juce::AudioChannelSet::stereo(), true)
+                         .withInput("Input",  juce::AudioChannelSet::stereo(), true)
 #endif
                          .withOutput("Output", juce::AudioChannelSet::stereo(), true)
 #endif
       )
 {
-    playbackBuffer_.resize(kPlaybackFifoFrames * 2, 0.0f);
+    playbackBuffer_.resize(static_cast<size_t>(kPlaybackFifoFrames) * kNumOutputChannels, 0.0f);
     {
         juce::ScopedLock l(statusLock_);
-        statusText_ = "Idle - enter a prompt and click Generate.";
+        statusText_ = "Idle \xe2\x80\x94 enter a prompt and click Generate.";
     }
 }
 
-AceForgeBridgeAudioProcessor::~AceForgeBridgeAudioProcessor()
+AcestepAudioProcessor::~AcestepAudioProcessor()
 {
     cancelPendingUpdate();
 }
 
-// ── Path helpers ──────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// Path helpers
+// ═════════════════════════════════════════════════════════════════════════════
 
-void AceForgeBridgeAudioProcessor::setBinariesPath(const juce::String& path)
+void AcestepAudioProcessor::setBinariesPath(const juce::String& p)
 {
-    juce::ScopedLock l(pathsLock_);
-    binariesPath_ = path;
+    juce::ScopedLock l(pathsLock_); binariesPath_ = p;
+}
+juce::String AcestepAudioProcessor::getBinariesPath() const
+{
+    juce::ScopedLock l(pathsLock_); return binariesPath_;
 }
 
-juce::String AceForgeBridgeAudioProcessor::getBinariesPath() const
+void AcestepAudioProcessor::setModelsPath(const juce::String& p)
 {
-    juce::ScopedLock l(pathsLock_);
-    return binariesPath_;
+    juce::ScopedLock l(pathsLock_); modelsPath_ = p;
+}
+juce::String AcestepAudioProcessor::getModelsPath() const
+{
+    juce::ScopedLock l(pathsLock_); return modelsPath_;
 }
 
-void AceForgeBridgeAudioProcessor::setModelsPath(const juce::String& path)
+void AcestepAudioProcessor::setOutputPath(const juce::String& p)
 {
-    juce::ScopedLock l(pathsLock_);
-    modelsPath_ = path;
+    juce::ScopedLock l(pathsLock_); outputPath_ = p;
+}
+juce::String AcestepAudioProcessor::getOutputPath() const
+{
+    juce::ScopedLock l(pathsLock_); return outputPath_;
 }
 
-juce::String AceForgeBridgeAudioProcessor::getModelsPath() const
-{
-    juce::ScopedLock l(pathsLock_);
-    return modelsPath_;
-}
-
-juce::File AceForgeBridgeAudioProcessor::getModelsDirectory() const
+juce::File AcestepAudioProcessor::getModelsDirectory() const
 {
     juce::String mp;
-    {
-        juce::ScopedLock l(pathsLock_);
-        mp = modelsPath_;
-    }
-    if (!mp.isEmpty())
-        return juce::File(mp);
+    { juce::ScopedLock l(pathsLock_); mp = modelsPath_; }
+    if (!mp.isEmpty()) return juce::File(mp);
     return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
-               .getChildFile("AceForgeBridge")
-               .getChildFile("models");
+               .getChildFile("AcestepVST").getChildFile("models");
 }
 
-bool AceForgeBridgeAudioProcessor::areBinariesReady() const
+juce::File AcestepAudioProcessor::getLibraryDirectory() const
+{
+    juce::String op;
+    { juce::ScopedLock l(pathsLock_); op = outputPath_; }
+    juce::File dir = op.isEmpty()
+        ? juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+              .getChildFile("AcestepVST").getChildFile("Generations")
+        : juce::File(op);
+    if (!dir.exists()) dir.createDirectory();
+    return dir;
+}
+
+bool AcestepAudioProcessor::areBinariesReady() const
 {
     juce::String bp;
-    {
-        juce::ScopedLock l(pathsLock_);
-        bp = binariesPath_;
-    }
+    { juce::ScopedLock l(pathsLock_); bp = binariesPath_; }
     juce::File binDir = bp.isEmpty()
         ? juce::File::getSpecialLocation(juce::File::currentApplicationFile).getParentDirectory()
         : juce::File(bp);
@@ -139,47 +149,163 @@ bool AceForgeBridgeAudioProcessor::areBinariesReady() const
         && binDir.getChildFile("dit-vae").existsAsFile();
 }
 
-// ── AudioProcessor boilerplate ────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+// AudioProcessor boilerplate
+// ═════════════════════════════════════════════════════════════════════════════
 
-void AceForgeBridgeAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
+void AcestepAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
     juce::ignoreUnused(samplesPerBlock);
     sampleRate_.store(sampleRate);
 }
+void AcestepAudioProcessor::releaseResources() {}
 
-void AceForgeBridgeAudioProcessor::releaseResources() {}
+// ═════════════════════════════════════════════════════════════════════════════
+// processBlock — audio thread
+// ═════════════════════════════════════════════════════════════════════════════
 
-// ── Generation ────────────────────────────────────────────────────────────────
-
-void AceForgeBridgeAudioProcessor::startGeneration(const juce::String& prompt, int durationSeconds, int inferenceSteps)
+void AcestepAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
+                                         juce::MidiBuffer& midiMessages)
 {
-    // Only one generation at a time: atomically transition to Submitting only from a non-busy state.
+    juce::ignoreUnused(midiMessages);
+    juce::ScopedNoDenormals noDenormals;
+
+    // ── Update BPM from DAW playhead ─────────────────────────────────────────
+    if (auto* ph = getPlayHead())
+        if (auto pos = ph->getPosition())
+            if (auto bpm = pos->getBpm())
+                hostBpm_.store(*bpm, std::memory_order_relaxed);
+
+    const int numSamples = buffer.getNumSamples();
+    const int numCh      = buffer.getNumChannels();
+    if (numCh < 2) { buffer.clear(); return; }
+
+    // ── Handle stop request ──────────────────────────────────────────────────
+    if (stopRequested_.exchange(false, std::memory_order_acq_rel))
+    {
+        playbackFifo_.reset();
+        loopReadPos_.store(0, std::memory_order_relaxed);
+        buffer.clear();
+        return;
+    }
+
+    // ── Accept new audio handed off by the message thread ────────────────────
+    if (pendingPlaybackReady_.exchange(false, std::memory_order_acq_rel))
+    {
+        const int N      = pendingPlaybackFrames_.load(std::memory_order_acquire);
+        const int bufIdx = pendingPlaybackBufIdx_.load(std::memory_order_acquire);
+        const std::vector<float>& srcBuf = pendingPlaybackBuf_[bufIdx];
+        if (N > 0 && N <= kPlaybackFifoFrames
+            && srcBuf.size() >= static_cast<size_t>(N) * kNumOutputChannels)
+        {
+            playbackFifo_.reset();
+            int s1, b1, s2, b2;
+            playbackFifo_.prepareToWrite(N, s1, b1, s2, b2);
+            const float* src = srcBuf.data();
+            auto copyBlock = [&](int fStart, int count, int srcOff)
+            {
+                for (int i = 0; i < count; ++i)
+                {
+                    const size_t fi = static_cast<size_t>(fStart + i);
+                    const int    si = (srcOff + i) * 2;
+                    if (fi * 2 + 1 < playbackBuffer_.size())
+                    {
+                        playbackBuffer_[fi * 2]     = src[si];
+                        playbackBuffer_[fi * 2 + 1] = src[si + 1];
+                    }
+                }
+            };
+            copyBlock(s1, b1, 0);
+            copyBlock(s2, b2, b1);
+            playbackFifo_.finishedWrite(b1 + b2);
+        }
+    }
+
+    // ── Loop playback (reads directly from loopBuf_, wraps around) ───────────
+    if (loopPlayback_.load(std::memory_order_relaxed))
+    {
+        const int active = loopBufActive_.load(std::memory_order_acquire);
+        const int total  = loopFrames_[active];
+        if (total > 0 && static_cast<int>(loopBuf_[active].size()) >= total * kNumOutputChannels)
+        {
+            int rp = loopReadPos_.load(std::memory_order_relaxed);
+            const float* lb = loopBuf_[active].data();
+            for (int i = 0; i < numSamples; ++i)
+            {
+                if (rp >= total) rp = 0;
+                buffer.setSample(0, i, lb[static_cast<size_t>(rp) * 2]);
+                buffer.setSample(1, i, lb[static_cast<size_t>(rp) * 2 + 1]);
+                ++rp;
+            }
+            loopReadPos_.store(rp, std::memory_order_relaxed);
+            return;
+        }
+    }
+
+    // ── One-shot FIFO playback ────────────────────────────────────────────────
+    int s1, b1, s2, b2;
+    playbackFifo_.prepareToRead(numSamples, s1, b1, s2, b2);
+    auto readFrames = [&](int fStart, int count, int bufOff)
+    {
+        for (int i = 0; i < count; ++i)
+        {
+            const size_t base = static_cast<size_t>(fStart + i) * 2u;
+            if (base + 1 < playbackBuffer_.size() && bufOff + i < numSamples)
+            {
+                buffer.setSample(0, bufOff + i, playbackBuffer_[base]);
+                buffer.setSample(1, bufOff + i, playbackBuffer_[base + 1]);
+            }
+        }
+    };
+    readFrames(s1, b1, 0);
+    readFrames(s2, b2, b1);
+    playbackFifo_.finishedRead(b1 + b2);
+
+    for (int i = b1 + b2; i < numSamples; ++i)
+    {
+        buffer.setSample(0, i, 0.0f);
+        buffer.setSample(1, i, 0.0f);
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Generation — public entry point
+// ═════════════════════════════════════════════════════════════════════════════
+
+void AcestepAudioProcessor::startGeneration(const juce::String& prompt,
+                                             int durationSeconds, int inferenceSteps,
+                                             juce::File coverFile, float coverStrength,
+                                             float bpm)
+{
+    // Only one generation at a time.
     State expected = state_.load();
     while (expected == State::Submitting || expected == State::Running)
         return;
     while (!state_.compare_exchange_weak(expected, State::Submitting))
-    {
         if (expected == State::Submitting || expected == State::Running)
             return;
-    }
     {
         juce::ScopedLock l(statusLock_);
         statusText_ = stateToString(State::Submitting);
     }
     triggerAsyncUpdate();
-    std::thread t(&AceForgeBridgeAudioProcessor::runGenerationThread, this, prompt, durationSeconds, inferenceSteps);
+    std::thread t(&AcestepAudioProcessor::runGenerationThread, this,
+                  prompt, durationSeconds, inferenceSteps,
+                  std::move(coverFile), coverStrength, bpm);
     t.detach();
 }
 
-void AceForgeBridgeAudioProcessor::runGenerationThread(juce::String prompt, int durationSec, int inferenceSteps)
+// ═════════════════════════════════════════════════════════════════════════════
+// Generation — background thread
+// ═════════════════════════════════════════════════════════════════════════════
+
+void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int durationSec,
+                                                 int inferenceSteps, juce::File coverFile,
+                                                 float coverStrength, float bpm)
 {
-    // ── 1. Resolve binary and model directories ────────────────────────────────
+    // ── 1. Resolve binary and model directories ───────────────────────────────
     juce::String bp, mp;
-    {
-        juce::ScopedLock l(pathsLock_);
-        bp = binariesPath_;
-        mp = modelsPath_;
-    }
+    { juce::ScopedLock l(pathsLock_); bp = binariesPath_; mp = modelsPath_; }
 
     juce::File binDir = bp.isEmpty()
         ? juce::File::getSpecialLocation(juce::File::currentApplicationFile).getParentDirectory()
@@ -192,16 +318,16 @@ void AceForgeBridgeAudioProcessor::runGenerationThread(juce::String prompt, int 
     {
         state_.store(State::Failed);
         juce::ScopedLock l(statusLock_);
-        lastError_ = "acestep.cpp binaries not found in: " + binDir.getFullPathName()
-                   + "\nBuild with: cmake -B vendor/acestep.cpp/build vendor/acestep.cpp"
-                   + "\n            cmake --build vendor/acestep.cpp/build --config Release";
+        lastError_ = "Binaries not found in: " + binDir.getFullPathName()
+                   + "\nBuild: cmake -B vendor/acestep.cpp/build vendor/acestep.cpp"
+                   + " && cmake --build vendor/acestep.cpp/build --config Release";
         statusText_ = lastError_;
-        logErrorToFileAndStderr(lastError_);
+        logError(lastError_);
         triggerAsyncUpdate();
         return;
     }
 
-    juce::File modelsDir = mp.isEmpty() ? getModelsDirectory() : juce::File(mp);
+    juce::File modelsDir        = mp.isEmpty() ? getModelsDirectory() : juce::File(mp);
     juce::File lmModel          = modelsDir.getChildFile("acestep-5Hz-lm-4B-Q8_0.gguf");
     juce::File textEncoderModel = modelsDir.getChildFile("Qwen3-Embedding-0.6B-Q8_0.gguf");
     juce::File ditModel         = modelsDir.getChildFile("acestep-v15-turbo-Q8_0.gguf");
@@ -212,30 +338,31 @@ void AceForgeBridgeAudioProcessor::runGenerationThread(juce::String prompt, int 
     {
         state_.store(State::Failed);
         juce::ScopedLock l(statusLock_);
-        lastError_ = "ACE-Step models not found in: " + modelsDir.getFullPathName()
-                   + "\nDownload with: cd vendor/acestep.cpp && ./models.sh";
+        lastError_ = "Models not found in: " + modelsDir.getFullPathName()
+                   + "\nDownload: cd vendor/acestep.cpp && ./models.sh";
         statusText_ = lastError_;
-        logErrorToFileAndStderr(lastError_);
+        logError(lastError_);
         triggerAsyncUpdate();
         return;
     }
 
-    // ── 2. Create a temporary work directory for this generation ───────────────
+    // ── 2. Create temp work directory ─────────────────────────────────────────
     juce::File tmpDir = juce::File::getSpecialLocation(juce::File::tempDirectory)
-                            .getChildFile("AceForgeBridge")
-                            .getChildFile("gen_" + juce::Time::getCurrentTime().formatted("%Y%m%d_%H%M%S"));
+                            .getChildFile("AcestepVST")
+                            .getChildFile("gen_" + juce::Time::getCurrentTime()
+                                                        .formatted("%Y%m%d_%H%M%S"));
     if (!tmpDir.createDirectory())
     {
         state_.store(State::Failed);
         juce::ScopedLock l(statusLock_);
-        lastError_ = "Cannot create temp directory: " + tmpDir.getFullPathName();
+        lastError_ = "Cannot create temp dir: " + tmpDir.getFullPathName();
         statusText_ = lastError_;
-        logErrorToFileAndStderr(lastError_);
+        logError(lastError_);
         triggerAsyncUpdate();
         return;
     }
 
-    // ── 3. Write request.json ──────────────────────────────────────────────────
+    // ── 3. Write request.json ─────────────────────────────────────────────────
     juce::File requestFile = tmpDir.getChildFile("request.json");
     {
         auto* obj = new juce::DynamicObject();
@@ -243,6 +370,21 @@ void AceForgeBridgeAudioProcessor::runGenerationThread(juce::String prompt, int 
         obj->setProperty("lyrics",          "[Instrumental]");
         obj->setProperty("inference_steps", inferenceSteps <= 0 ? 8 : inferenceSteps);
         obj->setProperty("duration",        durationSec   <= 0 ? 10 : durationSec);
+
+        // BPM: use caller-supplied value if non-zero, else fall back to host BPM
+        float effectiveBpm = bpm > 0.0f ? bpm : static_cast<float>(hostBpm_.load(std::memory_order_relaxed));
+        if (effectiveBpm > 0.0f)
+            obj->setProperty("bpm", juce::roundToInt(effectiveBpm));
+
+        // Cover / repaint mode
+        const bool isCover = coverFile.existsAsFile();
+        if (isCover)
+        {
+            obj->setProperty("src_audio",      coverFile.getFullPathName());
+            obj->setProperty("cover_strength", juce::jlimit(0.0f, 1.0f, coverStrength));
+            obj->setProperty("task_type",      "cover");
+        }
+
         juce::String json = juce::JSON::toString(juce::var(obj));
         if (!requestFile.replaceWithText(json))
         {
@@ -250,15 +392,15 @@ void AceForgeBridgeAudioProcessor::runGenerationThread(juce::String prompt, int 
             juce::ScopedLock l(statusLock_);
             lastError_ = "Cannot write request.json to " + tmpDir.getFullPathName();
             statusText_ = lastError_;
-            logErrorToFileAndStderr(lastError_);
+            logError(lastError_);
             triggerAsyncUpdate();
             tmpDir.deleteRecursively();
             return;
         }
     }
-    logTrace("runGenerationThread: request.json written to " + requestFile.getFullPathName());
+    logTrace("request.json written to " + requestFile.getFullPathName());
 
-    // ── 4. Step 1 — ace-qwen3 (LLM: generates lyrics + audio codes) ──────────
+    // ── 4. ace-qwen3 (LLM: text → audio codes) ───────────────────────────────
     {
         juce::ScopedLock l(statusLock_);
         statusText_ = stateToString(State::Submitting);
@@ -277,28 +419,26 @@ void AceForgeBridgeAudioProcessor::runGenerationThread(juce::String prompt, int 
         juce::ScopedLock l(statusLock_);
         lastError_ = "Failed to start ace-qwen3: " + aceQwen3.getFullPathName();
         statusText_ = lastError_;
-        logErrorToFileAndStderr(lastError_);
+        logError(lastError_);
         triggerAsyncUpdate();
         tmpDir.deleteRecursively();
         return;
     }
-
     lmProc.waitForProcessToFinish(kLmTimeoutMs);
     const int lmExit = lmProc.getExitCode();
-    logTrace("runGenerationThread: ace-qwen3 exited with " + juce::String(lmExit));
+    logTrace("ace-qwen3 exit=" + juce::String(lmExit));
     if (lmExit != 0)
     {
         state_.store(State::Failed);
         juce::ScopedLock l(statusLock_);
         lastError_ = "ace-qwen3 failed (exit " + juce::String(lmExit) + ")";
         statusText_ = lastError_;
-        logErrorToFileAndStderr(lastError_);
+        logError(lastError_);
         triggerAsyncUpdate();
         tmpDir.deleteRecursively();
         return;
     }
 
-    // ace-qwen3 writes request0.json next to request.json
     juce::File enrichedRequest = tmpDir.getChildFile("request0.json");
     if (!enrichedRequest.existsAsFile())
     {
@@ -306,13 +446,13 @@ void AceForgeBridgeAudioProcessor::runGenerationThread(juce::String prompt, int 
         juce::ScopedLock l(statusLock_);
         lastError_ = "ace-qwen3 did not produce request0.json in " + tmpDir.getFullPathName();
         statusText_ = lastError_;
-        logErrorToFileAndStderr(lastError_);
+        logError(lastError_);
         triggerAsyncUpdate();
         tmpDir.deleteRecursively();
         return;
     }
 
-    // ── 5. Step 2 — dit-vae (DiT + VAE: synthesises audio) ───────────────────
+    // ── 5. dit-vae (DiT + VAE: synthesise audio) ──────────────────────────────
     state_.store(State::Running);
     {
         juce::ScopedLock l(statusLock_);
@@ -327,6 +467,13 @@ void AceForgeBridgeAudioProcessor::runGenerationThread(juce::String prompt, int 
     ditArgs.add("--dit");          ditArgs.add(ditModel.getFullPathName());
     ditArgs.add("--vae");          ditArgs.add(vaeModel.getFullPathName());
 
+    // Pass source audio for cover / repaint mode
+    if (coverFile.existsAsFile())
+    {
+        ditArgs.add("--src-audio");      ditArgs.add(coverFile.getFullPathName());
+        ditArgs.add("--cover-strength"); ditArgs.add(juce::String(coverStrength, 2));
+    }
+
     juce::ChildProcess ditProc;
     if (!ditProc.start(ditArgs, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
     {
@@ -334,47 +481,39 @@ void AceForgeBridgeAudioProcessor::runGenerationThread(juce::String prompt, int 
         juce::ScopedLock l(statusLock_);
         lastError_ = "Failed to start dit-vae: " + ditVae.getFullPathName();
         statusText_ = lastError_;
-        logErrorToFileAndStderr(lastError_);
+        logError(lastError_);
         triggerAsyncUpdate();
         tmpDir.deleteRecursively();
         return;
     }
-
     ditProc.waitForProcessToFinish(kDitTimeoutMs);
     const int ditExit = ditProc.getExitCode();
-    logTrace("runGenerationThread: dit-vae exited with " + juce::String(ditExit));
+    logTrace("dit-vae exit=" + juce::String(ditExit));
     if (ditExit != 0)
     {
         state_.store(State::Failed);
         juce::ScopedLock l(statusLock_);
         lastError_ = "dit-vae failed (exit " + juce::String(ditExit) + ")";
         statusText_ = lastError_;
-        logErrorToFileAndStderr(lastError_);
+        logError(lastError_);
         triggerAsyncUpdate();
         tmpDir.deleteRecursively();
         return;
     }
 
-    // ── 6. Locate the output audio file ───────────────────────────────────────
-    // dit-vae writes request00.mp3 (or .wav) next to the --request file
+    // ── 6. Find output audio file ─────────────────────────────────────────────
     juce::File outputFile;
     juce::String audioExt;
-    for (const juce::String& ext : kSupportedAudioExts)
+    for (const juce::String& ext : kAudioExts)
     {
-        juce::File candidate = tmpDir.getChildFile("request00." + ext);
-        if (candidate.existsAsFile())
-        {
-            outputFile = candidate;
-            audioExt   = ext;
-            break;
-        }
+        juce::File c = tmpDir.getChildFile("request00." + ext);
+        if (c.existsAsFile()) { outputFile = c; audioExt = ext; break; }
     }
     if (!outputFile.existsAsFile())
     {
-        // Fallback: take the first audio file of a supported type found in tmpDir
         juce::Array<juce::File> found;
         tmpDir.findChildFiles(found, juce::File::findFiles, false,
-                              kSupportedAudioExts.joinIntoString(";", "*."));
+                              kAudioExts.joinIntoString(";", "*."));
         if (!found.isEmpty())
         {
             outputFile = found[0];
@@ -385,16 +524,16 @@ void AceForgeBridgeAudioProcessor::runGenerationThread(juce::String prompt, int 
     {
         state_.store(State::Failed);
         juce::ScopedLock l(statusLock_);
-        lastError_ = "dit-vae produced no audio output in " + tmpDir.getFullPathName();
+        lastError_ = "dit-vae produced no output in " + tmpDir.getFullPathName();
         statusText_ = lastError_;
-        logErrorToFileAndStderr(lastError_);
+        logError(lastError_);
         triggerAsyncUpdate();
         tmpDir.deleteRecursively();
         return;
     }
-    logTrace("runGenerationThread: output audio at " + outputFile.getFullPathName());
+    logTrace("output audio: " + outputFile.getFullPathName());
 
-    // ── 7. Read audio bytes and hand off to the message thread for decoding ───
+    // ── 7. Read bytes and hand off to message thread ──────────────────────────
     juce::MemoryBlock rawBytes;
     if (!outputFile.loadFileAsData(rawBytes) || rawBytes.getSize() == 0)
     {
@@ -402,7 +541,7 @@ void AceForgeBridgeAudioProcessor::runGenerationThread(juce::String prompt, int 
         juce::ScopedLock l(statusLock_);
         lastError_ = "Failed to read output audio: " + outputFile.getFullPathName();
         statusText_ = lastError_;
-        logErrorToFileAndStderr(lastError_);
+        logError(lastError_);
         triggerAsyncUpdate();
         tmpDir.deleteRecursively();
         return;
@@ -412,350 +551,421 @@ void AceForgeBridgeAudioProcessor::runGenerationThread(juce::String prompt, int 
         juce::ScopedLock l(pendingWavLock_);
         pendingWavBytes_.resize(rawBytes.getSize());
         std::memcpy(pendingWavBytes_.data(), rawBytes.getData(), rawBytes.getSize());
-        pendingAudioExt_   = audioExt;
-        pendingPrompt_     = prompt;
-        pendingDurationSec_ = durationSec;
+        pendingAudioExt_ = audioExt;
+        pendingPrompt_   = prompt;
     }
     triggerAsyncUpdate();
     tmpDir.deleteRecursively();
 }
 
-void AceForgeBridgeAudioProcessor::pushSamplesToPlayback(const float* interleaved, int numFrames,
-                                                         int sourceChannels, double sourceSampleRate)
+// ═════════════════════════════════════════════════════════════════════════════
+// Playback control (message-thread safe)
+// ═════════════════════════════════════════════════════════════════════════════
+
+void AcestepAudioProcessor::stopPlayback()
 {
-    logTrace("pushSamplesToPlayback: numFrames=" + juce::String(numFrames) + " ch=" + juce::String(sourceChannels) + " rate=" + juce::String(sourceSampleRate));
-    if (numFrames <= 0 || interleaved == nullptr)
+    stopRequested_.store(true, std::memory_order_release);
+    {
+        juce::ScopedLock l(statusLock_);
+        if (state_.load() == State::Succeeded)
+            statusText_ = "Idle \xe2\x80\x94 enter a prompt and click Generate.";
+    }
+}
+
+void AcestepAudioProcessor::setLoopPlayback(bool loop)
+{
+    loopPlayback_.store(loop, std::memory_order_relaxed);
+}
+
+void AcestepAudioProcessor::previewLibraryEntry(const juce::File& file)
+{
+    // Don't interrupt an active generation.
+    const auto st = state_.load();
+    if (st == State::Submitting || st == State::Running)
         return;
+    {
+        juce::ScopedLock l(pendingPreviewLock_);
+        pendingPreviewFile_ = file;
+    }
+    triggerAsyncUpdate();
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Playback internals
+// ═════════════════════════════════════════════════════════════════════════════
+
+void AcestepAudioProcessor::pushSamplesToPlayback(const float* interleaved, int numFrames,
+                                                   int sourceChannels, double sourceSampleRate)
+{
+    logTrace("pushSamplesToPlayback: frames=" + juce::String(numFrames)
+           + " ch=" + juce::String(sourceChannels)
+           + " rate=" + juce::String(sourceSampleRate));
+
+    if (numFrames <= 0 || interleaved == nullptr) return;
+
     const double hostRate = sampleRate_.load(std::memory_order_relaxed);
-    const double ratio = sourceSampleRate > 0.0 ? hostRate / sourceSampleRate : 1.0;
-    const int outFrames = static_cast<int>(std::round(static_cast<double>(numFrames) * ratio));
+    const double ratio    = sourceSampleRate > 0.0 ? hostRate / sourceSampleRate : 1.0;
+    const int outFrames   = static_cast<int>(std::round(static_cast<double>(numFrames) * ratio));
     if (outFrames <= 0 || outFrames > kPlaybackFifoFrames)
     {
         logTrace("pushSamplesToPlayback: skipped (outFrames=" + juce::String(outFrames) + ")");
         return;
     }
 
-    // Write into the buffer the audio thread is not reading (alternate 0/1)
-    const int writeIdx = nextWriteIndex_.load(std::memory_order_relaxed);
-    std::vector<float>& outBuf = pendingPlaybackBuffer_[writeIdx];
-    logTrace("pushSamplesToPlayback: resizing buffer to " + juce::String(outFrames * 2) + " floats");
-    outBuf.resize(static_cast<size_t>(outFrames) * 2u);
+    const int writeIdx = nextWriteIdx_.load(std::memory_order_relaxed);
+    std::vector<float>& outBuf = pendingPlaybackBuf_[writeIdx];
+    outBuf.resize(static_cast<size_t>(outFrames) * kNumOutputChannels);
     float* out = outBuf.data();
+
     for (int i = 0; i < outFrames; ++i)
     {
-        const double srcIdx = ratio > 0.0 ? (double)i / ratio : (double)i;
+        const double srcIdx = ratio > 0.0 ? static_cast<double>(i) / ratio
+                                          : static_cast<double>(i);
         const int i0 = std::min(std::max(0, static_cast<int>(srcIdx)), numFrames - 1);
         const int i1 = std::min(i0 + 1, numFrames - 1);
         const float t = static_cast<float>(srcIdx - std::floor(srcIdx));
         float l = 0.0f, r = 0.0f;
         if (sourceChannels >= 1)
         {
-            l = interleaved[i0 * sourceChannels] * (1.0f - t) + interleaved[i1 * sourceChannels] * t;
+            l = interleaved[i0 * sourceChannels] * (1.0f - t)
+              + interleaved[i1 * sourceChannels] * t;
             r = sourceChannels >= 2
-                    ? interleaved[i0 * sourceChannels + 1] * (1.0f - t) + interleaved[i1 * sourceChannels + 1] * t
-                    : l;
+                  ? interleaved[i0 * sourceChannels + 1] * (1.0f - t)
+                  + interleaved[i1 * sourceChannels + 1] * t
+                  : l;
         }
-        out[i * 2] = l;
+        out[i * 2]     = l;
         out[i * 2 + 1] = r;
     }
-    pendingPlaybackFrames_.store(outFrames, std::memory_order_release);
-    pendingPlaybackBufferIndex_.store(writeIdx, std::memory_order_release);
-    pendingPlaybackReady_.store(true, std::memory_order_release);
-    nextWriteIndex_.store(1 - writeIdx, std::memory_order_release);
-    logTrace("pushSamplesToPlayback: done");
+
+    pendingPlaybackFrames_.store(outFrames,    std::memory_order_release);
+    pendingPlaybackBufIdx_.store(writeIdx,     std::memory_order_release);
+    pendingPlaybackReady_.store(true,          std::memory_order_release);
+    nextWriteIdx_.store(1 - writeIdx,          std::memory_order_release);
+    logTrace("pushSamplesToPlayback: done (" + juce::String(outFrames) + " frames)");
 }
 
-void AceForgeBridgeAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
-                                                juce::MidiBuffer& midiMessages)
+void AcestepAudioProcessor::setLoopData(const float* interleaved, int numFrames)
 {
-    juce::ignoreUnused(midiMessages);
-    juce::ScopedNoDenormals noDenormals;
-    const int numSamples = buffer.getNumSamples();
-    const int numCh = buffer.getNumChannels();
-    if (numCh < 2)
+    if (numFrames <= 0 || interleaved == nullptr) return;
+    const int writeSlot = nextLoopWrite_.load(std::memory_order_relaxed);
+    loopBuf_[writeSlot].assign(interleaved, interleaved + static_cast<size_t>(numFrames) * kNumOutputChannels);
+    loopFrames_[writeSlot] = numFrames;
+    loopReadPos_.store(0, std::memory_order_relaxed);
+    loopBufActive_.store(writeSlot, std::memory_order_release);
+    nextLoopWrite_.store(1 - writeSlot, std::memory_order_relaxed);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// decodeAndPushAudio — message thread
+// ═════════════════════════════════════════════════════════════════════════════
+
+void AcestepAudioProcessor::decodeAndPushAudio(const std::vector<uint8_t>& bytes,
+                                                const juce::String& ext,
+                                                const juce::String& promptForLibrary)
+{
+    const bool isGenResult = promptForLibrary.isNotEmpty();
+
+    juce::AudioFormatManager fm;
+    fm.registerFormat(new juce::WavAudioFormat(), true);
+#if JUCE_USE_MP3AUDIOFORMAT
+    fm.registerFormat(new juce::MP3AudioFormat(), false);
+#endif
+    auto mis = std::make_unique<juce::MemoryInputStream>(bytes.data(), bytes.size(), false);
+    std::unique_ptr<juce::AudioFormatReader> reader(fm.createReaderFor(std::move(mis)));
+
+    if (!reader)
     {
-        buffer.clear();
+        if (isGenResult)
+        {
+            state_.store(State::Failed);
+            juce::ScopedLock l(statusLock_);
+            lastError_ = "Failed to decode audio (" + ext + ")";
+            statusText_ = lastError_;
+            logError(lastError_);
+        }
         return;
     }
 
-    // Apply any new playback buffer from the message thread; only we (audio thread) may reset the fifo (JUCE AbstractFifo is single-reader single-writer; reset from another thread causes crashes).
-    if (pendingPlaybackReady_.exchange(false, std::memory_order_acq_rel))
+    const double fileSR     = reader->sampleRate;
+    const int    numCh      = static_cast<int>(reader->numChannels);
+    const int    numSamples = static_cast<int>(reader->lengthInSamples);
+    logTrace("audio: rate=" + juce::String(fileSR) + " ch=" + juce::String(numCh)
+           + " samples=" + juce::String(numSamples));
+
+    if (numSamples <= 0 || numCh <= 0)
     {
-        const int N = pendingPlaybackFrames_.load(std::memory_order_acquire);
-        const int bufIdx = pendingPlaybackBufferIndex_.load(std::memory_order_acquire);
-        const std::vector<float>& srcBuf = pendingPlaybackBuffer_[bufIdx];
-        if (N > 0 && N <= kPlaybackFifoFrames && srcBuf.size() >= static_cast<size_t>(N) * 2u)
-        {
-            playbackFifo_.reset();
-            int start1, block1, start2, block2;
-            playbackFifo_.prepareToWrite(N, start1, block1, start2, block2);
-            const float* src = srcBuf.data();
-            auto copyBlock = [&](int fifoStart, int count, int srcOffset)
-            {
-                for (int i = 0; i < count && (fifoStart + i) * 2 + 1 < static_cast<int>(playbackBuffer_.size()); ++i)
-                {
-                    const int s = (srcOffset + i) * 2;
-                    playbackBuffer_[static_cast<size_t>(fifoStart + i) * 2u] = src[s];
-                    playbackBuffer_[static_cast<size_t>(fifoStart + i) * 2u + 1u] = src[s + 1];
-                }
-            };
-            copyBlock(start1, block1, 0);
-            copyBlock(start2, block2, block1);
-            playbackFifo_.finishedWrite(block1 + block2);
-        }
-    }
-
-    int start1, block1, start2, block2;
-    playbackFifo_.prepareToRead(numSamples, start1, block1, start2, block2);
-
-    auto readFrames = [&](int fifoStart, int count, int bufferOffset)
-    {
-        for (int i = 0; i < count; ++i)
-        {
-            const size_t base = static_cast<size_t>(fifoStart + i) * 2u;
-            if (base + 1 < playbackBuffer_.size() && bufferOffset + i < numSamples)
-            {
-                buffer.setSample(0, bufferOffset + i, playbackBuffer_[base]);
-                buffer.setSample(1, bufferOffset + i, playbackBuffer_[base + 1]);
-            }
-        }
-    };
-    readFrames(start1, block1, 0);
-    readFrames(start2, block2, block1);
-    playbackFifo_.finishedRead(block1 + block2);
-
-    const int readCount = block1 + block2;
-    for (int i = readCount; i < numSamples; ++i)
-    {
-        buffer.setSample(0, i, 0.0f);
-        buffer.setSample(1, i, 0.0f);
-    }
-}
-
-juce::String AceForgeBridgeAudioProcessor::getStatusText() const
-{
-    juce::ScopedLock l(statusLock_);
-    return statusText_;
-}
-
-juce::String AceForgeBridgeAudioProcessor::getLastError() const
-{
-    juce::ScopedLock l(statusLock_);
-    return lastError_;
-}
-
-juce::File AceForgeBridgeAudioProcessor::getLibraryDirectory() const
-{
-    juce::File dir = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
-                         .getChildFile("AceForgeBridge")
-                         .getChildFile("Generations");
-    if (!dir.exists())
-        dir.createDirectory();
-    return dir;
-}
-
-std::vector<AceForgeBridgeAudioProcessor::LibraryEntry> AceForgeBridgeAudioProcessor::getLibraryEntries() const
-{
-    juce::Array<juce::File> wavs;
-    getLibraryDirectory().findChildFiles(wavs, juce::File::findFiles, false, "*.wav");
-    std::vector<LibraryEntry> entries;
-    for (const juce::File& f : wavs)
-        entries.push_back({ f, f.getFileName().upToFirstOccurrenceOf(".", false, false), f.getLastModificationTime() });
-    std::sort(entries.begin(), entries.end(),
-              [](const LibraryEntry& a, const LibraryEntry& b) { return a.time > b.time; });
-    return entries;
-}
-
-void AceForgeBridgeAudioProcessor::addToLibrary(const juce::File& wavFile, const juce::String& prompt)
-{
-    juce::ignoreUnused(wavFile, prompt);
-    // File is already on disk; optional: write prompt to .txt sidecar for display
-}
-
-void AceForgeBridgeAudioProcessor::handleAsyncUpdate()
-{
-    logTrace("handleAsyncUpdate: start");
-    std::vector<uint8_t> audioBytes;
-    juce::String audioExt;
-    juce::String promptForLibrary;
-    {
-        juce::ScopedLock l(pendingWavLock_);
-        if (pendingWavBytes_.empty())
-            return;
-        audioBytes = std::move(pendingWavBytes_);
-        pendingWavBytes_.clear();
-        audioExt          = pendingAudioExt_;
-        promptForLibrary  = pendingPrompt_;
-    }
-    logTrace("handleAsyncUpdate: got audio bytes, size=" + juce::String(audioBytes.size()) + " ext=" + audioExt);
-
-    try
-    {
-        juce::AudioFormatManager fm;
-        fm.registerFormat(new juce::WavAudioFormat(), true);
-#if JUCE_USE_MP3AUDIOFORMAT
-        fm.registerFormat(new juce::MP3AudioFormat(), false);
-#endif
-        logTrace("handleAsyncUpdate: creating MemoryInputStream");
-        auto mis = std::make_unique<juce::MemoryInputStream>(audioBytes.data(), audioBytes.size(), false);
-        logTrace("handleAsyncUpdate: creating reader");
-        std::unique_ptr<juce::AudioFormatReader> reader(fm.createReaderFor(std::move(mis)));
-        if (!reader)
+        if (isGenResult)
         {
             state_.store(State::Failed);
             juce::ScopedLock l(statusLock_);
-            lastError_ = "Failed to decode audio (" + audioExt + ")";
+            lastError_ = "Invalid audio (no samples)";
             statusText_ = lastError_;
-            logErrorToFileAndStderr(lastError_);
-            return;
+            logError(lastError_);
         }
-        const double fileSampleRate = reader->sampleRate;
-        const int numCh = static_cast<int>(reader->numChannels);
-        const int numSamples = static_cast<int>(reader->lengthInSamples);
-        logTrace("handleAsyncUpdate: audio info rate=" + juce::String(fileSampleRate) + " ch=" + juce::String(numCh) + " samples=" + juce::String(numSamples));
-        if (numSamples <= 0 || numCh <= 0)
-        {
-            state_.store(State::Failed);
-            juce::ScopedLock l(statusLock_);
-            lastError_ = "Invalid audio file (no samples)";
-            statusText_ = lastError_;
-            logErrorToFileAndStderr(lastError_);
-            return;
-        }
-        logTrace("handleAsyncUpdate: allocating fileBuffer");
-        juce::AudioBuffer<float> fileBuffer(numCh, numSamples);
-        logTrace("handleAsyncUpdate: reading samples");
-        if (!reader->read(&fileBuffer, 0, numSamples, 0, true, true))
+        return;
+    }
+
+    juce::AudioBuffer<float> fb(numCh, numSamples);
+    if (!reader->read(&fb, 0, numSamples, 0, true, true))
+    {
+        if (isGenResult)
         {
             state_.store(State::Failed);
             juce::ScopedLock l(statusLock_);
             lastError_ = "Failed to read audio samples";
             statusText_ = lastError_;
-            logErrorToFileAndStderr(lastError_);
-            return;
+            logError(lastError_);
         }
-        logTrace("handleAsyncUpdate: building interleaved buffer");
-        std::vector<float> interleaved(static_cast<size_t>(numSamples) * 2u);
-        for (int i = 0; i < numSamples; ++i)
-        {
-            interleaved[static_cast<size_t>(i) * 2u] = numCh > 0 ? fileBuffer.getSample(0, i) : 0.0f;
-            interleaved[static_cast<size_t>(i) * 2u + 1u] = numCh > 1 ? fileBuffer.getSample(1, i) : interleaved[static_cast<size_t>(i) * 2u];
-        }
-        logTrace("handleAsyncUpdate: calling pushSamplesToPlayback");
-        pushSamplesToPlayback(interleaved.data(), numSamples, 2, fileSampleRate);
-        playbackBufferReady_.store(true);
+        return;
+    }
+
+    // Build interleaved buffer (2-ch)
+    std::vector<float> interleaved(static_cast<size_t>(numSamples) * kNumOutputChannels);
+    for (int i = 0; i < numSamples; ++i)
+    {
+        interleaved[static_cast<size_t>(i) * kNumOutputChannels]      = numCh > 0 ? fb.getSample(0, i) : 0.0f;
+        interleaved[static_cast<size_t>(i) * kNumOutputChannels + 1u] = numCh > 1
+            ? fb.getSample(1, i) : interleaved[static_cast<size_t>(i) * kNumOutputChannels];
+    }
+
+    pushSamplesToPlayback(interleaved.data(), numSamples, 2, fileSR);
+    setLoopData(interleaved.data(), numSamples);
+    playbackBufferReady_.store(true);
+
+    if (isGenResult)
+    {
         state_.store(State::Succeeded);
         {
             juce::ScopedLock l(statusLock_);
-            statusText_ = "Generated - playing.";
+            statusText_ = "Generated \xe2\x80\x94 playing. Drag from Library into your DAW.";
         }
-        logTrace("handleAsyncUpdate: playback updated, saving to library");
-        // Save to library so user can drag into DAW (own try so a file error doesn't lose playback)
+
+        // Save to library
         try
         {
-            juce::File libDir = getLibraryDirectory();
-            juce::String baseName = "gen_" + juce::Time::getCurrentTime().formatted("%Y%m%d_%H%M%S");
-            juce::File wavFile = libDir.getChildFile(baseName + ".wav");
-            std::unique_ptr<juce::OutputStream> outStream = wavFile.createOutputStream();
-            if (outStream != nullptr)
+            juce::File libDir  = getLibraryDirectory();
+            juce::String base  = "gen_" + juce::Time::getCurrentTime().formatted("%Y%m%d_%H%M%S");
+            juce::File wavFile = libDir.getChildFile(base + ".wav");
+            auto outStream = wavFile.createOutputStream();
+            if (outStream)
             {
-                juce::WavAudioFormat wavFormat;
-                auto options = juce::AudioFormatWriterOptions{}
-                                  .withSampleRate(fileSampleRate)
-                                  .withNumChannels(numCh)
-                                  .withBitsPerSample(24);
-                if (auto writer = wavFormat.createWriterFor(outStream, options))
+                juce::WavAudioFormat wf;
+                auto opts = juce::AudioFormatWriterOptions{}
+                                .withSampleRate(fileSR)
+                                .withNumChannels(numCh)
+                                .withBitsPerSample(24);
+                // createWriterFor takes ownership of the raw stream pointer;
+                // release() gives it up so the unique_ptr won't double-delete.
+                auto* rawStream = outStream.release();
+                auto* writerRaw = wf.createWriterFor(rawStream, opts);
+                if (writerRaw)
                 {
-                    if (writer->writeFromAudioSampleBuffer(fileBuffer, 0, numSamples))
+                    std::unique_ptr<juce::AudioFormatWriter> writer(writerRaw);
+                    if (writer->writeFromAudioSampleBuffer(fb, 0, numSamples))
                         addToLibrary(wavFile, promptForLibrary);
+                    // writer destructor flushes and deletes rawStream
+                }
+                else
+                {
+                    delete rawStream; // writer failed to take ownership
                 }
             }
-            logTrace("handleAsyncUpdate: library save done");
+            logTrace("library save done");
         }
-        catch (const std::exception& e)
+        catch (const std::exception& e) { logError("Library save failed: " + juce::String(e.what())); }
+        catch (...) { logError("Library save failed (unknown)"); }
+    }
+    else
+    {
+        juce::ScopedLock l(statusLock_);
+        statusText_ = "Previewing \xe2\x80\x94 press Stop to stop.";
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// handleAsyncUpdate — message thread
+// ═════════════════════════════════════════════════════════════════════════════
+
+void AcestepAudioProcessor::handleAsyncUpdate()
+{
+    logTrace("handleAsyncUpdate");
+
+    // ── Preview request takes priority ────────────────────────────────────────
+    juce::File previewFile;
+    {
+        juce::ScopedLock l(pendingPreviewLock_);
+        previewFile = pendingPreviewFile_;
+        pendingPreviewFile_ = {};
+    }
+    if (previewFile.existsAsFile())
+    {
+        juce::MemoryBlock mb;
+        if (previewFile.loadFileAsData(mb) && mb.getSize() > 0)
         {
-            logErrorToFileAndStderr("Library save failed: " + juce::String(e.what()));
+            std::vector<uint8_t> bytes(mb.getSize());
+            std::memcpy(bytes.data(), mb.getData(), mb.getSize());
+            juce::String rawExt = previewFile.getFileExtension()
+                                             .trimCharactersAtStart(".")
+                                             .toLowerCase();
+            decodeAndPushAudio(bytes, rawExt, {}); // empty prompt → preview only
         }
-        catch (...)
-        {
-            logErrorToFileAndStderr("Library save failed (unknown)");
-        }
-        logTrace("handleAsyncUpdate: done");
+        return;
+    }
+
+    // ── Generation result ─────────────────────────────────────────────────────
+    std::vector<uint8_t> audioBytes;
+    juce::String audioExt, promptForLib;
+    {
+        juce::ScopedLock l(pendingWavLock_);
+        if (pendingWavBytes_.empty()) return;
+        audioBytes   = std::move(pendingWavBytes_);
+        pendingWavBytes_.clear();
+        audioExt     = pendingAudioExt_;
+        promptForLib = pendingPrompt_;
+    }
+
+    try
+    {
+        decodeAndPushAudio(audioBytes, audioExt, promptForLib);
     }
     catch (const std::exception& e)
     {
         state_.store(State::Failed);
         juce::ScopedLock l(statusLock_);
-        lastError_ = juce::String("Decode error: ") + e.what();
+        lastError_  = juce::String("Decode error: ") + e.what();
         statusText_ = lastError_;
-        logErrorToFileAndStderr(lastError_);
+        logError(lastError_);
     }
     catch (...)
     {
         state_.store(State::Failed);
         juce::ScopedLock l(statusLock_);
-        lastError_ = "Decode error (unknown)";
+        lastError_  = "Decode error (unknown)";
         statusText_ = lastError_;
-        logErrorToFileAndStderr(lastError_);
+        logError(lastError_);
     }
 }
 
-const juce::String AceForgeBridgeAudioProcessor::getName() const { return JucePlugin_Name; }
-bool AceForgeBridgeAudioProcessor::acceptsMidi() const { return false; }
-bool AceForgeBridgeAudioProcessor::producesMidi() const { return false; }
-bool AceForgeBridgeAudioProcessor::isMidiEffect() const { return false; }
-double AceForgeBridgeAudioProcessor::getTailLengthSeconds() const { return 0.0; }
-int AceForgeBridgeAudioProcessor::getNumPrograms() { return 1; }
-int AceForgeBridgeAudioProcessor::getCurrentProgram() { return 0; }
-void AceForgeBridgeAudioProcessor::setCurrentProgram(int index) { juce::ignoreUnused(index); }
-const juce::String AceForgeBridgeAudioProcessor::getProgramName(int index)
-{
-    juce::ignoreUnused(index);
-    return {};
-}
-void AceForgeBridgeAudioProcessor::changeProgramName(int index, const juce::String& newName)
-{
-    juce::ignoreUnused(index, newName);
-}
+// ═════════════════════════════════════════════════════════════════════════════
+// Library management
+// ═════════════════════════════════════════════════════════════════════════════
 
-bool AceForgeBridgeAudioProcessor::isBusesLayoutSupported(const juce::AudioProcessor::BusesLayout& layouts) const
+std::vector<AcestepAudioProcessor::LibraryEntry>
+AcestepAudioProcessor::getLibraryEntries() const
 {
-    if (layouts.getMainOutputChannelSet() != juce::AudioChannelSet::mono() &&
-        layouts.getMainOutputChannelSet() != juce::AudioChannelSet::stereo())
-        return false;
-    return true;
-}
+    juce::Array<juce::File> files;
+    auto libDir = getLibraryDirectory();
+    libDir.findChildFiles(files, juce::File::findFiles, false, "*.wav;*.mp3");
 
-bool AceForgeBridgeAudioProcessor::hasEditor() const { return true; }
-juce::AudioProcessorEditor* AceForgeBridgeAudioProcessor::createEditor()
-{
-    return new AceForgeBridgeAudioProcessorEditor(*this);
-}
-void AceForgeBridgeAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
-{
-    juce::String bp, mp;
+    std::vector<LibraryEntry> entries;
+    for (const juce::File& f : files)
     {
-        juce::ScopedLock l(pathsLock_);
-        bp = binariesPath_;
-        mp = modelsPath_;
+        juce::String prompt;
+        juce::File sidecar = f.withFileExtension("txt");
+        if (sidecar.existsAsFile())
+            prompt = sidecar.loadFileAsString().trim();
+        entries.push_back({ f, prompt, f.getLastModificationTime() });
     }
-    auto xml = std::make_unique<juce::XmlElement>("AceForgeBridgeState");
+    std::sort(entries.begin(), entries.end(),
+              [](const LibraryEntry& a, const LibraryEntry& b) { return a.time > b.time; });
+    return entries;
+}
+
+void AcestepAudioProcessor::addToLibrary(const juce::File& audioFile,
+                                          const juce::String& prompt)
+{
+    // Write prompt to a sidecar .txt so the UI can display it
+    if (prompt.isNotEmpty())
+        audioFile.withFileExtension("txt").replaceWithText(prompt);
+}
+
+bool AcestepAudioProcessor::deleteLibraryEntry(const juce::File& file)
+{
+    const bool ok = file.deleteFile();
+    juce::File sidecar = file.withFileExtension("txt");
+    if (sidecar.existsAsFile()) sidecar.deleteFile();
+    return ok;
+}
+
+bool AcestepAudioProcessor::importAudioFile(const juce::File& sourceFile)
+{
+    if (!sourceFile.existsAsFile()) return false;
+    juce::String ext = sourceFile.getFileExtension().toLowerCase();
+    if (ext != ".wav" && ext != ".mp3") return false;
+    juce::File dest = getLibraryDirectory().getChildFile(
+        "import_" + juce::Time::getCurrentTime().formatted("%Y%m%d_%H%M%S") + ext);
+    return sourceFile.copyFileTo(dest);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Status accessors
+// ═════════════════════════════════════════════════════════════════════════════
+
+juce::String AcestepAudioProcessor::getStatusText() const
+{
+    juce::ScopedLock l(statusLock_); return statusText_;
+}
+juce::String AcestepAudioProcessor::getLastError() const
+{
+    juce::ScopedLock l(statusLock_); return lastError_;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// AudioProcessor boilerplate
+// ═════════════════════════════════════════════════════════════════════════════
+
+const juce::String AcestepAudioProcessor::getName() const { return JucePlugin_Name; }
+bool AcestepAudioProcessor::acceptsMidi()  const { return false; }
+bool AcestepAudioProcessor::producesMidi() const { return false; }
+bool AcestepAudioProcessor::isMidiEffect() const { return false; }
+double AcestepAudioProcessor::getTailLengthSeconds() const { return 0.0; }
+int AcestepAudioProcessor::getNumPrograms()  { return 1; }
+int AcestepAudioProcessor::getCurrentProgram() { return 0; }
+void AcestepAudioProcessor::setCurrentProgram(int i) { juce::ignoreUnused(i); }
+const juce::String AcestepAudioProcessor::getProgramName(int i) { juce::ignoreUnused(i); return {}; }
+void AcestepAudioProcessor::changeProgramName(int i, const juce::String& n) { juce::ignoreUnused(i, n); }
+
+bool AcestepAudioProcessor::isBusesLayoutSupported(
+    const juce::AudioProcessor::BusesLayout& layouts) const
+{
+    return layouts.getMainOutputChannelSet() == juce::AudioChannelSet::mono()
+        || layouts.getMainOutputChannelSet() == juce::AudioChannelSet::stereo();
+}
+
+bool AcestepAudioProcessor::hasEditor() const { return true; }
+juce::AudioProcessorEditor* AcestepAudioProcessor::createEditor()
+{
+    return new AcestepAudioProcessorEditor(*this);
+}
+
+// ── State persistence ─────────────────────────────────────────────────────────
+
+void AcestepAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
+{
+    juce::String bp, mp, op;
+    { juce::ScopedLock l(pathsLock_); bp = binariesPath_; mp = modelsPath_; op = outputPath_; }
+    auto xml = std::make_unique<juce::XmlElement>("AcestepState");
     xml->setAttribute("binariesPath", bp);
     xml->setAttribute("modelsPath",   mp);
+    xml->setAttribute("outputPath",   op);
     copyXmlToBinary(*xml, destData);
 }
-void AceForgeBridgeAudioProcessor::setStateInformation(const void* data, int sizeInBytes)
+
+void AcestepAudioProcessor::setStateInformation(const void* data, int sizeInBytes)
 {
     auto xml = getXmlFromBinary(data, sizeInBytes);
-    if (xml && xml->hasTagName("AceForgeBridgeState"))
+    if (xml && xml->hasTagName("AcestepState"))
     {
         juce::ScopedLock l(pathsLock_);
         binariesPath_ = xml->getStringAttribute("binariesPath");
         modelsPath_   = xml->getStringAttribute("modelsPath");
+        outputPath_   = xml->getStringAttribute("outputPath");
     }
 }
 
+// ── Plugin factory ────────────────────────────────────────────────────────────
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
-    return new AceForgeBridgeAudioProcessor();
+    return new AcestepAudioProcessor();
 }

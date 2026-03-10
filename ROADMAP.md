@@ -1,131 +1,85 @@
-# AceForge Bridge — Roadmap
+# ACE-Step VST — Roadmap
 
-This document tracks the planned feature progression for integrating
-[acestep.cpp](https://github.com/ServeurpersoCom/acestep.cpp) as the local,
-standalone AI inference engine inside the AceForge Bridge AU/VST3 plugin.
+Tracks planned features for the standalone **ACE-Step** AU/VST3 plugin powered by
+[acestep.cpp](https://github.com/ServeurpersoCom/acestep.cpp).
 
 ---
 
-## Phase 1 — Submodule, project scaffolding & standalone engine ✅
+## Phase 1 — Submodule, standalone engine & rename ✅
 
-- [x] Add `acestep.cpp` as a `vendor/` git submodule.
-- [x] Update GitHub Actions checkout to pull submodules recursively.
-- [x] Document build steps for both the JUCE plugin and the acestep.cpp engine.
-- [x] Add `.gitignore` rules for submodule build artefacts.
-- [x] **Remove AceForge HTTP server dependency entirely** — plugin is now fully standalone.
-- [x] Replace `AceForgeClient` HTTP generation with `juce::ChildProcess` subprocess pipeline (`ace-qwen3` → `dit-vae`).
-- [x] Remove `AceForgeClient` static library from CMake build.
-- [x] Update state machine: remove `Queued` (HTTP-specific); `Submitting` = LLM step, `Running` = DiT+VAE step.
-- [x] Persist binary and model paths in plugin state (DAW project file via `getStateInformation`/`setStateInformation`).
+- [x] Add `acestep.cpp` as `vendor/` git submodule.
+- [x] Remove AceForge HTTP server dependency entirely.
+- [x] Replace `AceForgeClient` HTTP pipeline with `juce::ChildProcess` subprocess pipeline (`ace-qwen3` → `dit-vae`).
+- [x] **Rename plugin** from "AceForge Bridge" to **"ACE-Step"** (`AcestepVST` CMake target, `AcestepAudioProcessor` class).
 - [x] Enable `JUCE_USE_MP3AUDIOFORMAT` to decode MP3 output from `dit-vae`.
-- [x] Update all documentation to reflect standalone design.
+- [x] Persist binary/model/output paths in DAW project state.
 
 ---
 
-## Phase 2 — First-run setup & model management
+## Phase 2 — Generation queue / library player ✅
 
-- [ ] **Settings page** — on first plugin initialisation (and via a settings
-      panel) prompt the user to choose:
-  - Folder for GGUF model files — platform defaults:
-    - macOS: `~/Library/Application Support/AceForgeBridge/models/`
-    - Linux: `~/.config/AceForgeBridge/models/`
-    - Windows: `%APPDATA%\AceForgeBridge\models\`
-  - Folder for generated audio output — platform defaults:
-    - macOS: `~/Library/Application Support/AceForgeBridge/Generations/`
-    - Linux: `~/.config/AceForgeBridge/Generations/`
-    - Windows: `%APPDATA%\AceForgeBridge\Generations\`
-- [ ] **Model presence detection** — scan the model folder for the four required
-      GGUFs (`Qwen3-Embedding-0.6B-Q8_0.gguf`, `acestep-5Hz-lm-4B-Q8_0.gguf`,
-      `acestep-v15-turbo-Q8_0.gguf`, `vae-BF16.gguf`). If all are present,
-      proceed normally; otherwise offer a download wizard.
-- [ ] **Model download wizard** — wrap `models.sh` (or call the Hugging Face
-      API directly) with a progress panel inside the plugin UI. Allow the user
-      to choose quantisation (`Q8_0` by default, Q4/Q5/Q6 for space savings).
-- [ ] **Graceful failure** — clear error messages when models are missing or
-      partially downloaded; never crash the DAW host.
+- [x] **Library list** — browse all previous generations (WAV + MP3), sorted newest-first.
+- [x] **Sidecar prompts** — write a `.txt` next to each generated file; display the prompt in the list.
+- [x] **Preview** — click ▶ Preview to load any library entry into the playback buffer; press ■ Stop to stop.
+- [x] **Loop** — toggle ⟳ Loop to repeat the current audio continuously.
+- [x] **Delete** — remove a library entry (file + sidecar) with one click.
+- [x] **Import** — Import File… button copies any external WAV/MP3 into the library.
+- [x] **Drag from OS** — drop WAV/MP3 files from Finder/Explorer onto the plugin window to import them into the library (Library tab) or set them as a cover reference (Generate tab).
+- [x] **Drag to DAW** — drag a library row to insert the file into the DAW timeline at the current cursor position.
+- [x] **Use as Reference** — one click sets a library entry as the cover reference and switches to Cover Mode.
 
 ---
 
-## Phase 3 — OS detection & platform builds
+## Phase 3 — Cover / repaint mode ✅
 
-- [ ] **OS/accelerator detection** — at CMake configure time and at runtime,
-      detect the target backend:
-  - macOS → Metal (default; no extra flag needed)
-  - Linux + NVIDIA → `GGML_CUDA=ON`
-  - Linux + AMD → `GGML_HIP=ON`
-  - Linux Vulkan → `GGML_VULKAN=ON`
-  - CPU fallback → `GGML_BLAS=ON`
-- [ ] **GitHub Actions matrix** — extend the CI workflow to build on:
-  - `macos-latest` (arm64, Metal) — **first priority**
-  - `ubuntu-latest` with CUDA runner — second priority
-  - `ubuntu-latest` CPU-only — always-available fallback
-- [ ] Each CI matrix leg produces a platform-specific zip and installer.
+- [x] **Reference audio** — Browse… or drag-drop a WAV/MP3 as the source audio for cover mode.
+- [x] **Cover strength slider** — 0–1 slider controls how closely the output follows the reference.
+- [x] **Mode toggle** — "Text-to-Music" vs "Cover Mode" buttons with clear visual distinction.
+- [x] Pass `--src-audio` and `--cover-strength` to `dit-vae` CLI.
+- [x] Embed `src_audio`, `cover_strength`, and `task_type: "cover"` in `request.json`.
 
 ---
 
-## Phase 4 — Basic text-to-music generation (acestep.cpp) ✅
+## Phase 4 — Settings & BPM ✅
 
-The plugin now uses the local `acestep.cpp` subprocess pipeline for all generation.
-
-- [x] **Binary discovery** — locate `ace-qwen3` and `dit-vae` next to the plugin bundle (or configurable path).
-- [x] **Generation queue** — single-job-at-a-time guard prevents duplicate background threads.
-- [x] **Request JSON builder** — translates plugin UI fields (prompt, duration, inference steps) into `request.json`.
-- [x] **Two-stage pipeline** — `ace-qwen3` (LLM) then `dit-vae` (DiT+VAE); status label reflects each step.
-- [x] **Audio result** — output WAV/MP3 is decoded and pushed to the playback buffer; saved to the library.
-- [ ] **Drag-to-DAW** — improve drag so files land at the DAW timeline cursor position.
-- [ ] **Insert at cursor** — use `juce::DragAndDropContainer::startDraggingExternalFiles` with the WAV path.
+- [x] **Settings tab** — configure binaries directory, models directory, and output directory; changes persisted in DAW project XML.
+- [x] **BPM auto-detect** — read BPM from the DAW playhead in every `processBlock()`; auto-populate the BPM field (editable override).
+- [x] **BPM in request.json** — pass detected/entered BPM to `ace-qwen3` for rhythmically consistent output.
 
 ---
 
-## Phase 5 — Cover / repaint mode
+## Phase 5 — Model management & first-run UX
 
-Transform an existing audio file into a new style using `--src-audio`.
-
-- [ ] **Audio file input** — accept WAV/MP3 files dropped onto the plugin UI
-      (from Finder, Explorer, or the DAW itself) as source audio.
-- [ ] **Cover parameters** — expose `audio_cover_strength` (0–1 slider) and
-      style prompt in the UI.
-- [ ] **No-LLM path** — call `dit-vae` directly with `--src-audio`; skip the
-      `ace-qwen3` step for faster turnaround.
+- [ ] **Model presence detection** — scan model folder on startup; show clear warning in Settings if models are missing.
+- [ ] **Download wizard** — wrap `models.sh` with a progress panel inside the plugin UI.
 
 ---
 
-## Phase 6 — Lego / stem mode
+## Phase 6 — OS & accelerator support
 
-Generate individual stems (drums, bass, chords, melody) that can each be placed
-independently on the DAW timeline.
-
-- [ ] **Stem request** — extend the request JSON with stem-separation metadata
-      once acestep.cpp exposes it.
-- [ ] **Multi-track insert** — insert each stem onto its own track in the DAW
-      (Logic Pro / Ableton) at the cursor position.
-- [ ] **Stem library** — group stems by generation session in the library panel.
+- [ ] **Linux / CUDA / ROCm / Vulkan** builds via CI matrix.
+- [ ] **Windows** support.
+- [ ] **GitHub Actions matrix** — `macos-latest` (arm64, Metal) + `ubuntu-latest` CPU fallback.
 
 ---
 
-## Phase 7 — Batch generation & variants
+## Phase 7 — Lego / stem mode
 
-- [ ] **LLM batch** (`--batch N`) — generate N lyrically distinct songs from
-      one prompt; present them as alternatives in the library.
-- [ ] **DiT batch** — generate subtle render variations of the same song for
-      cherry-picking.
-- [ ] **Comparison view** — side-by-side waveform previews in the plugin UI.
+- [ ] Generate individual stems (drums, bass, chords, melody).
+- [ ] Multi-track insert: place each stem on its own DAW track.
 
 ---
 
-## Phase 8 — LoRA / fine-tuned model support
+## Phase 8 — Batch generation & variants
 
-- [ ] **LoRA adapter picker** — allow users to point to a PEFT directory or a
-      ComfyUI `.safetensors` file to steer generation style.
-- [ ] **Adapter library** — list available adapters; toggle per-generation.
+- [ ] `--batch N` — generate N variations; present as alternatives in the library.
+- [ ] Side-by-side comparison view.
 
 ---
 
 ## Updating the submodule
 
 ```bash
-# Pull the latest upstream acestep.cpp changes
-# (upstream uses the 'master' branch; verify with `git -C vendor/acestep.cpp branch -a`)
 git -C vendor/acestep.cpp fetch origin
 git -C vendor/acestep.cpp checkout origin/master
 git add vendor/acestep.cpp
