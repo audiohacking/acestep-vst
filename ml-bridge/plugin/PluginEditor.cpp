@@ -780,8 +780,8 @@ void AcestepAudioProcessorEditor::paint(juce::Graphics& g)
 
 void AcestepAudioProcessorEditor::hideAllTabComponents()
 {
-    for (auto* c : {
-        (juce::Component*)&promptLabel_, &promptEditor_,
+    for (auto* c : std::initializer_list<juce::Component*>{
+        &promptLabel_, &promptEditor_,
         &durationLabel_, &durationCombo_, &stepsLabel_, &stepsCombo_,
         &bpmLabel_, &bpmEditor_,
         &genModeButton_, &coverModeButton_,

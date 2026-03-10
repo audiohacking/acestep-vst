@@ -755,7 +755,10 @@ void AcestepAudioProcessor::decodeAndPushAudio(const std::vector<uint8_t>& bytes
                 // release() gives it up so the unique_ptr won't double-delete.
                 auto* rawStream = outStream.release();
                 // args: stream, sampleRate, numChannels, bitsPerSample, metadata, qualityOption
-                auto* writerRaw = wf.createWriterFor(rawStream, fileSR, numCh, 24, {}, 0);
+                JUCE_BEGIN_IGNORE_WARNINGS_GCC_LIKE ("-Wdeprecated-declarations")
+                auto* writerRaw = wf.createWriterFor(rawStream, fileSR,
+                                                     static_cast<unsigned int>(numCh), 24, {}, 0);
+                JUCE_END_IGNORE_WARNINGS_GCC_LIKE
                 if (writerRaw)
                 {
                     std::unique_ptr<juce::AudioFormatWriter> writer(writerRaw);
