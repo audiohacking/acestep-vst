@@ -17,20 +17,32 @@ Full description, build details, and installer steps: **ml-bridge/README.md**.
 
 ## Quick start
 
-1. **Build** (from repo root):
+1. **Clone with submodules** (or run `git submodule update --init` after a plain clone):
+   ```bash
+   git clone --recurse-submodules https://github.com/audiohacking/aceforge-vst.git
+   ```
+
+2. **Build the JUCE plugin** (from repo root):
    ```bash
    cmake -B build -G "Unix Makefiles" -DCMAKE_OSX_ARCHITECTURES=arm64
    cmake --build build --config Release
    ```
    Or use the Xcode generator: `-G Xcode` instead of `-G "Unix Makefiles"`.
 
-2. **Install** — Copy the built `.component` and `.vst3` from the build tree into your plug-in folders, or build the installer:
+3. **Build the acestep.cpp inference engine** (macOS / Apple Silicon):
+   ```bash
+   cmake -B vendor/acestep.cpp/build vendor/acestep.cpp
+   cmake --build vendor/acestep.cpp/build --config Release -j$(sysctl -n hw.logicalcpu)
+   ```
+   See [`vendor/acestep.cpp/README.md`](vendor/acestep.cpp/README.md) for Linux (CUDA/ROCm/Vulkan) instructions.
+
+4. **Install** — Copy the built `.component` and `.vst3` from the build tree into your plug-in folders, or build the installer:
    ```bash
    ./scripts/build-installer-pkg.sh --sign-plugins --version 0.1.0
    ```
    Then install `release-artefacts/AceForgeBridge-macOS-Installer.pkg` (or open it in Finder).
 
-3. Rescan plugins in your DAW; run AceForge so the API is available at `http://127.0.0.1:5056`.
+5. Rescan plugins in your DAW; run AceForge so the API is available at `http://127.0.0.1:5056`.
 
 ## Repo layout
 
@@ -41,6 +53,8 @@ Full description, build details, and installer steps: **ml-bridge/README.md**.
 | **ml-bridge/AceForgeClient/** | C++ HTTP client for AceForge API (macOS) |
 | **ml-bridge/AceForge.md** | API summary for the plugin |
 | **ml-bridge/BUILD_AND_CI.md** | Build and GitHub Actions release |
+| **vendor/acestep.cpp/** | [acestep.cpp](https://github.com/ServeurpersoCom/acestep.cpp) submodule — local AI inference engine |
+| **ROADMAP.md** | Feature roadmap for local AI integration |
 | **.github/workflows/release-plugins.yml** | Build and release on GitHub Release |
 
 ## Releases
