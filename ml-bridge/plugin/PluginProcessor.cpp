@@ -2,11 +2,11 @@
 #include "PluginEditor.h"
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <vector>
 #include <thread>
-#include <chrono>
 
 namespace
 {
@@ -46,15 +46,21 @@ const char* stateToString(AceForgeBridgeAudioProcessor::State s)
 {
     switch (s)
     {
-    case AceForgeBridgeAudioProcessor::State::Idle: return "Idle";
-    case AceForgeBridgeAudioProcessor::State::Submitting: return "Submitting…";
-    case AceForgeBridgeAudioProcessor::State::Queued: return "Queued…";
-    case AceForgeBridgeAudioProcessor::State::Running: return "Generating…";
-    case AceForgeBridgeAudioProcessor::State::Succeeded: return "Ready";
-    case AceForgeBridgeAudioProcessor::State::Failed: return "Failed";
+    case AceForgeBridgeAudioProcessor::State::Idle:       return "Idle";
+    case AceForgeBridgeAudioProcessor::State::Submitting: return "Generating lyrics & codes (LLM)…";
+    case AceForgeBridgeAudioProcessor::State::Running:    return "Synthesising audio (DiT+VAE)…";
+    case AceForgeBridgeAudioProcessor::State::Succeeded:  return "Ready";
+    case AceForgeBridgeAudioProcessor::State::Failed:     return "Failed";
     }
     return "";
 }
+
+// Timeout constants for the two subprocess steps
+static constexpr int kLmTimeoutMs  = 300'000;  // ace-qwen3: 5 minutes
+static constexpr int kDitTimeoutMs = 600'000;  // dit-vae:   10 minutes
+
+// Audio formats produced by dit-vae (in priority order)
+static const juce::StringArray kSupportedAudioExts { "wav", "mp3" };
 } // namespace
 
 AceForgeBridgeAudioProcessor::AceForgeBridgeAudioProcessor()
@@ -67,12 +73,10 @@ AceForgeBridgeAudioProcessor::AceForgeBridgeAudioProcessor()
 #endif
       )
 {
-    baseUrl_ = "http://127.0.0.1:5056";
-    client_ = std::make_unique<aceforge::AceForgeClient>(baseUrl_.toStdString());
     playbackBuffer_.resize(kPlaybackFifoFrames * 2, 0.0f);
     {
         juce::ScopedLock l(statusLock_);
-        statusText_ = "Idle - open the plugin and click Generate (10s).";
+        statusText_ = "Idle - enter a prompt and click Generate.";
     }
 }
 
@@ -81,12 +85,61 @@ AceForgeBridgeAudioProcessor::~AceForgeBridgeAudioProcessor()
     cancelPendingUpdate();
 }
 
-void AceForgeBridgeAudioProcessor::setBaseUrl(const juce::String& url)
+// ── Path helpers ──────────────────────────────────────────────────────────────
+
+void AceForgeBridgeAudioProcessor::setBinariesPath(const juce::String& path)
 {
-    baseUrl_ = url.isEmpty() ? "http://127.0.0.1:5056" : url;
-    if (client_)
-        client_->setBaseUrl(baseUrl_.toStdString());
+    juce::ScopedLock l(pathsLock_);
+    binariesPath_ = path;
 }
+
+juce::String AceForgeBridgeAudioProcessor::getBinariesPath() const
+{
+    juce::ScopedLock l(pathsLock_);
+    return binariesPath_;
+}
+
+void AceForgeBridgeAudioProcessor::setModelsPath(const juce::String& path)
+{
+    juce::ScopedLock l(pathsLock_);
+    modelsPath_ = path;
+}
+
+juce::String AceForgeBridgeAudioProcessor::getModelsPath() const
+{
+    juce::ScopedLock l(pathsLock_);
+    return modelsPath_;
+}
+
+juce::File AceForgeBridgeAudioProcessor::getModelsDirectory() const
+{
+    juce::String mp;
+    {
+        juce::ScopedLock l(pathsLock_);
+        mp = modelsPath_;
+    }
+    if (!mp.isEmpty())
+        return juce::File(mp);
+    return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+               .getChildFile("AceForgeBridge")
+               .getChildFile("models");
+}
+
+bool AceForgeBridgeAudioProcessor::areBinariesReady() const
+{
+    juce::String bp;
+    {
+        juce::ScopedLock l(pathsLock_);
+        bp = binariesPath_;
+    }
+    juce::File binDir = bp.isEmpty()
+        ? juce::File::getSpecialLocation(juce::File::currentApplicationFile).getParentDirectory()
+        : juce::File(bp);
+    return binDir.getChildFile("ace-qwen3").existsAsFile()
+        && binDir.getChildFile("dit-vae").existsAsFile();
+}
+
+// ── AudioProcessor boilerplate ────────────────────────────────────────────────
 
 void AceForgeBridgeAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
@@ -96,17 +149,22 @@ void AceForgeBridgeAudioProcessor::prepareToPlay(double sampleRate, int samplesP
 
 void AceForgeBridgeAudioProcessor::releaseResources() {}
 
+// ── Generation ────────────────────────────────────────────────────────────────
+
 void AceForgeBridgeAudioProcessor::startGeneration(const juce::String& prompt, int durationSeconds, int inferenceSteps)
 {
-    // Only one generation at a time: atomically transition to Submitting only from a non-busy state,
-    // so double-clicks or rapid UI updates don't spawn multiple threads (each would POST /api/generate).
+    // Only one generation at a time: atomically transition to Submitting only from a non-busy state.
     State expected = state_.load();
-    while (expected == State::Submitting || expected == State::Queued || expected == State::Running)
+    while (expected == State::Submitting || expected == State::Running)
         return;
     while (!state_.compare_exchange_weak(expected, State::Submitting))
     {
-        if (expected == State::Submitting || expected == State::Queued || expected == State::Running)
+        if (expected == State::Submitting || expected == State::Running)
             return;
+    }
+    {
+        juce::ScopedLock l(statusLock_);
+        statusText_ = stateToString(State::Submitting);
     }
     triggerAsyncUpdate();
     std::thread t(&AceForgeBridgeAudioProcessor::runGenerationThread, this, prompt, durationSeconds, inferenceSteps);
@@ -115,114 +173,251 @@ void AceForgeBridgeAudioProcessor::startGeneration(const juce::String& prompt, i
 
 void AceForgeBridgeAudioProcessor::runGenerationThread(juce::String prompt, int durationSec, int inferenceSteps)
 {
-    if (!client_)
+    // ── 1. Resolve binary and model directories ────────────────────────────────
+    juce::String bp, mp;
     {
-        state_.store(State::Failed);
-        {
-            juce::ScopedLock l(statusLock_);
-            lastError_ = "No client";
-            logErrorToFileAndStderr(lastError_);
-        }
-        triggerAsyncUpdate();
-        return;
+        juce::ScopedLock l(pathsLock_);
+        bp = binariesPath_;
+        mp = modelsPath_;
     }
 
-    client_->setBaseUrl(baseUrl_.toStdString());
-    if (!client_->healthCheck())
-    {
-        state_.store(State::Failed);
-        connected_.store(false);
-        {
-            juce::ScopedLock l(statusLock_);
-            lastError_ = "Cannot reach AceForge at " + baseUrl_ + " - is it running?";
-            statusText_ = lastError_;
-            logErrorToFileAndStderr(lastError_);
-        }
-        triggerAsyncUpdate();
-        return;
-    }
-    connected_.store(true);
+    juce::File binDir = bp.isEmpty()
+        ? juce::File::getSpecialLocation(juce::File::currentApplicationFile).getParentDirectory()
+        : juce::File(bp);
 
-    aceforge::GenerateParams params;
-    params.songDescription = prompt.toStdString();
-    params.durationSeconds = durationSec <= 0 ? 10 : durationSec;
-    params.inferenceSteps = inferenceSteps <= 0 ? 15 : (inferenceSteps > 100 ? 55 : inferenceSteps);
-    params.instrumental = true;
-    params.lyrics = "[inst]";
-    params.taskType = "text2music";
-    params.title = "aceforge_bridge_export";
+    juce::File aceQwen3 = binDir.getChildFile("ace-qwen3");
+    juce::File ditVae   = binDir.getChildFile("dit-vae");
 
-    std::string jobId = client_->startGeneration(params);
-    if (jobId.empty())
+    if (!aceQwen3.existsAsFile() || !ditVae.existsAsFile())
     {
         state_.store(State::Failed);
         juce::ScopedLock l(statusLock_);
-        lastError_ = juce::String(client_->lastError());
+        lastError_ = "acestep.cpp binaries not found in: " + binDir.getFullPathName()
+                   + "\nBuild with: cmake -B vendor/acestep.cpp/build vendor/acestep.cpp"
+                   + "\n            cmake --build vendor/acestep.cpp/build --config Release";
         statusText_ = lastError_;
         logErrorToFileAndStderr(lastError_);
         triggerAsyncUpdate();
         return;
     }
 
-    state_.store(State::Queued);
-    triggerAsyncUpdate();
+    juce::File modelsDir = mp.isEmpty() ? getModelsDirectory() : juce::File(mp);
+    juce::File lmModel          = modelsDir.getChildFile("acestep-5Hz-lm-4B-Q8_0.gguf");
+    juce::File textEncoderModel = modelsDir.getChildFile("Qwen3-Embedding-0.6B-Q8_0.gguf");
+    juce::File ditModel         = modelsDir.getChildFile("acestep-v15-turbo-Q8_0.gguf");
+    juce::File vaeModel         = modelsDir.getChildFile("vae-BF16.gguf");
 
-    while (true)
+    if (!lmModel.existsAsFile() || !textEncoderModel.existsAsFile()
+        || !ditModel.existsAsFile() || !vaeModel.existsAsFile())
     {
-        aceforge::JobStatus st = client_->getStatus(jobId);
-        if (st.status == "succeeded")
-        {
-            state_.store(State::Running);
-            triggerAsyncUpdate();
-            if (st.audioUrl.empty())
-            {
-                state_.store(State::Failed);
-                juce::ScopedLock l(statusLock_);
-                lastError_ = "No audio URL in result";
-                logErrorToFileAndStderr(lastError_);
-                triggerAsyncUpdate();
-                return;
-            }
-            std::vector<uint8_t> wavBytes = client_->fetchAudio(st.audioUrl);
-            if (wavBytes.empty())
-            {
-                state_.store(State::Failed);
-                juce::ScopedLock l(statusLock_);
-                lastError_ = juce::String(client_->lastError());
-                logErrorToFileAndStderr(lastError_);
-                triggerAsyncUpdate();
-                return;
-            }
-            // Decode and push on message thread (JUCE AudioFormatManager/Reader not safe from background thread)
-            {
-                juce::ScopedLock l(pendingWavLock_);
-                pendingWavBytes_ = std::move(wavBytes);
-                pendingPrompt_ = prompt;
-                pendingDurationSec_ = durationSec;
-            }
-            triggerAsyncUpdate();
-            return;
-        }
-        if (st.status == "failed")
+        state_.store(State::Failed);
+        juce::ScopedLock l(statusLock_);
+        lastError_ = "ACE-Step models not found in: " + modelsDir.getFullPathName()
+                   + "\nDownload with: cd vendor/acestep.cpp && ./models.sh";
+        statusText_ = lastError_;
+        logErrorToFileAndStderr(lastError_);
+        triggerAsyncUpdate();
+        return;
+    }
+
+    // ── 2. Create a temporary work directory for this generation ───────────────
+    juce::File tmpDir = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                            .getChildFile("AceForgeBridge")
+                            .getChildFile("gen_" + juce::Time::getCurrentTime().formatted("%Y%m%d_%H%M%S"));
+    if (!tmpDir.createDirectory())
+    {
+        state_.store(State::Failed);
+        juce::ScopedLock l(statusLock_);
+        lastError_ = "Cannot create temp directory: " + tmpDir.getFullPathName();
+        statusText_ = lastError_;
+        logErrorToFileAndStderr(lastError_);
+        triggerAsyncUpdate();
+        return;
+    }
+
+    // ── 3. Write request.json ──────────────────────────────────────────────────
+    juce::File requestFile = tmpDir.getChildFile("request.json");
+    {
+        auto* obj = new juce::DynamicObject();
+        obj->setProperty("caption",         prompt);
+        obj->setProperty("lyrics",          "[Instrumental]");
+        obj->setProperty("inference_steps", inferenceSteps <= 0 ? 8 : inferenceSteps);
+        obj->setProperty("duration",        durationSec   <= 0 ? 10 : durationSec);
+        juce::String json = juce::JSON::toString(juce::var(obj));
+        if (!requestFile.replaceWithText(json))
         {
             state_.store(State::Failed);
             juce::ScopedLock l(statusLock_);
-            lastError_ = juce::String::fromUTF8(st.error.c_str());
+            lastError_ = "Cannot write request.json to " + tmpDir.getFullPathName();
             statusText_ = lastError_;
             logErrorToFileAndStderr(lastError_);
             triggerAsyncUpdate();
+            tmpDir.deleteRecursively();
             return;
         }
-        state_.store(st.status == "running" ? State::Running : State::Queued);
-        {
-            juce::ScopedLock l(statusLock_);
-            statusText_ = juce::String(stateToString(state_.load()));
-            if (st.queuePosition > 0)
-                statusText_ += " (queue: " + juce::String(st.queuePosition) + ")";
-        }
-        triggerAsyncUpdate();
-        std::this_thread::sleep_for(std::chrono::milliseconds(800));
     }
+    logTrace("runGenerationThread: request.json written to " + requestFile.getFullPathName());
+
+    // ── 4. Step 1 — ace-qwen3 (LLM: generates lyrics + audio codes) ──────────
+    {
+        juce::ScopedLock l(statusLock_);
+        statusText_ = stateToString(State::Submitting);
+    }
+    triggerAsyncUpdate();
+
+    juce::StringArray lmArgs;
+    lmArgs.add(aceQwen3.getFullPathName());
+    lmArgs.add("--request"); lmArgs.add(requestFile.getFullPathName());
+    lmArgs.add("--model");   lmArgs.add(lmModel.getFullPathName());
+
+    juce::ChildProcess lmProc;
+    if (!lmProc.start(lmArgs, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
+    {
+        state_.store(State::Failed);
+        juce::ScopedLock l(statusLock_);
+        lastError_ = "Failed to start ace-qwen3: " + aceQwen3.getFullPathName();
+        statusText_ = lastError_;
+        logErrorToFileAndStderr(lastError_);
+        triggerAsyncUpdate();
+        tmpDir.deleteRecursively();
+        return;
+    }
+
+    lmProc.waitForProcessToFinish(kLmTimeoutMs);
+    const int lmExit = lmProc.getExitCode();
+    logTrace("runGenerationThread: ace-qwen3 exited with " + juce::String(lmExit));
+    if (lmExit != 0)
+    {
+        state_.store(State::Failed);
+        juce::ScopedLock l(statusLock_);
+        lastError_ = "ace-qwen3 failed (exit " + juce::String(lmExit) + ")";
+        statusText_ = lastError_;
+        logErrorToFileAndStderr(lastError_);
+        triggerAsyncUpdate();
+        tmpDir.deleteRecursively();
+        return;
+    }
+
+    // ace-qwen3 writes request0.json next to request.json
+    juce::File enrichedRequest = tmpDir.getChildFile("request0.json");
+    if (!enrichedRequest.existsAsFile())
+    {
+        state_.store(State::Failed);
+        juce::ScopedLock l(statusLock_);
+        lastError_ = "ace-qwen3 did not produce request0.json in " + tmpDir.getFullPathName();
+        statusText_ = lastError_;
+        logErrorToFileAndStderr(lastError_);
+        triggerAsyncUpdate();
+        tmpDir.deleteRecursively();
+        return;
+    }
+
+    // ── 5. Step 2 — dit-vae (DiT + VAE: synthesises audio) ───────────────────
+    state_.store(State::Running);
+    {
+        juce::ScopedLock l(statusLock_);
+        statusText_ = stateToString(State::Running);
+    }
+    triggerAsyncUpdate();
+
+    juce::StringArray ditArgs;
+    ditArgs.add(ditVae.getFullPathName());
+    ditArgs.add("--request");      ditArgs.add(enrichedRequest.getFullPathName());
+    ditArgs.add("--text-encoder"); ditArgs.add(textEncoderModel.getFullPathName());
+    ditArgs.add("--dit");          ditArgs.add(ditModel.getFullPathName());
+    ditArgs.add("--vae");          ditArgs.add(vaeModel.getFullPathName());
+
+    juce::ChildProcess ditProc;
+    if (!ditProc.start(ditArgs, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
+    {
+        state_.store(State::Failed);
+        juce::ScopedLock l(statusLock_);
+        lastError_ = "Failed to start dit-vae: " + ditVae.getFullPathName();
+        statusText_ = lastError_;
+        logErrorToFileAndStderr(lastError_);
+        triggerAsyncUpdate();
+        tmpDir.deleteRecursively();
+        return;
+    }
+
+    ditProc.waitForProcessToFinish(kDitTimeoutMs);
+    const int ditExit = ditProc.getExitCode();
+    logTrace("runGenerationThread: dit-vae exited with " + juce::String(ditExit));
+    if (ditExit != 0)
+    {
+        state_.store(State::Failed);
+        juce::ScopedLock l(statusLock_);
+        lastError_ = "dit-vae failed (exit " + juce::String(ditExit) + ")";
+        statusText_ = lastError_;
+        logErrorToFileAndStderr(lastError_);
+        triggerAsyncUpdate();
+        tmpDir.deleteRecursively();
+        return;
+    }
+
+    // ── 6. Locate the output audio file ───────────────────────────────────────
+    // dit-vae writes request00.mp3 (or .wav) next to the --request file
+    juce::File outputFile;
+    juce::String audioExt;
+    for (const juce::String& ext : kSupportedAudioExts)
+    {
+        juce::File candidate = tmpDir.getChildFile("request00." + ext);
+        if (candidate.existsAsFile())
+        {
+            outputFile = candidate;
+            audioExt   = ext;
+            break;
+        }
+    }
+    if (!outputFile.existsAsFile())
+    {
+        // Fallback: take the first audio file of a supported type found in tmpDir
+        juce::Array<juce::File> found;
+        tmpDir.findChildFiles(found, juce::File::findFiles, false,
+                              kSupportedAudioExts.joinIntoString(";", "*."));
+        if (!found.isEmpty())
+        {
+            outputFile = found[0];
+            audioExt   = outputFile.getFileExtension().trimCharactersAtStart(".");
+        }
+    }
+    if (!outputFile.existsAsFile())
+    {
+        state_.store(State::Failed);
+        juce::ScopedLock l(statusLock_);
+        lastError_ = "dit-vae produced no audio output in " + tmpDir.getFullPathName();
+        statusText_ = lastError_;
+        logErrorToFileAndStderr(lastError_);
+        triggerAsyncUpdate();
+        tmpDir.deleteRecursively();
+        return;
+    }
+    logTrace("runGenerationThread: output audio at " + outputFile.getFullPathName());
+
+    // ── 7. Read audio bytes and hand off to the message thread for decoding ───
+    juce::MemoryBlock rawBytes;
+    if (!outputFile.loadFileAsData(rawBytes) || rawBytes.getSize() == 0)
+    {
+        state_.store(State::Failed);
+        juce::ScopedLock l(statusLock_);
+        lastError_ = "Failed to read output audio: " + outputFile.getFullPathName();
+        statusText_ = lastError_;
+        logErrorToFileAndStderr(lastError_);
+        triggerAsyncUpdate();
+        tmpDir.deleteRecursively();
+        return;
+    }
+
+    {
+        juce::ScopedLock l(pendingWavLock_);
+        pendingWavBytes_.resize(rawBytes.getSize());
+        std::memcpy(pendingWavBytes_.data(), rawBytes.getData(), rawBytes.getSize());
+        pendingAudioExt_   = audioExt;
+        pendingPrompt_     = prompt;
+        pendingDurationSec_ = durationSec;
+    }
+    triggerAsyncUpdate();
+    tmpDir.deleteRecursively();
 }
 
 void AceForgeBridgeAudioProcessor::pushSamplesToPlayback(const float* interleaved, int numFrames,
@@ -380,31 +575,36 @@ void AceForgeBridgeAudioProcessor::addToLibrary(const juce::File& wavFile, const
 void AceForgeBridgeAudioProcessor::handleAsyncUpdate()
 {
     logTrace("handleAsyncUpdate: start");
-    std::vector<uint8_t> wavBytes;
+    std::vector<uint8_t> audioBytes;
+    juce::String audioExt;
     juce::String promptForLibrary;
     {
         juce::ScopedLock l(pendingWavLock_);
         if (pendingWavBytes_.empty())
             return;
-        wavBytes = std::move(pendingWavBytes_);
+        audioBytes = std::move(pendingWavBytes_);
         pendingWavBytes_.clear();
-        promptForLibrary = pendingPrompt_;
+        audioExt          = pendingAudioExt_;
+        promptForLibrary  = pendingPrompt_;
     }
-    logTrace("handleAsyncUpdate: got WAV bytes, size=" + juce::String(wavBytes.size()));
+    logTrace("handleAsyncUpdate: got audio bytes, size=" + juce::String(audioBytes.size()) + " ext=" + audioExt);
 
     try
     {
         juce::AudioFormatManager fm;
         fm.registerFormat(new juce::WavAudioFormat(), true);
+#if JUCE_USE_MP3AUDIOFORMAT
+        fm.registerFormat(new juce::MP3AudioFormat(), false);
+#endif
         logTrace("handleAsyncUpdate: creating MemoryInputStream");
-        auto mis = std::make_unique<juce::MemoryInputStream>(wavBytes.data(), wavBytes.size(), false);
+        auto mis = std::make_unique<juce::MemoryInputStream>(audioBytes.data(), audioBytes.size(), false);
         logTrace("handleAsyncUpdate: creating reader");
         std::unique_ptr<juce::AudioFormatReader> reader(fm.createReaderFor(std::move(mis)));
         if (!reader)
         {
             state_.store(State::Failed);
             juce::ScopedLock l(statusLock_);
-            lastError_ = "Failed to decode WAV";
+            lastError_ = "Failed to decode audio (" + audioExt + ")";
             statusText_ = lastError_;
             logErrorToFileAndStderr(lastError_);
             return;
@@ -412,12 +612,12 @@ void AceForgeBridgeAudioProcessor::handleAsyncUpdate()
         const double fileSampleRate = reader->sampleRate;
         const int numCh = static_cast<int>(reader->numChannels);
         const int numSamples = static_cast<int>(reader->lengthInSamples);
-        logTrace("handleAsyncUpdate: WAV info rate=" + juce::String(fileSampleRate) + " ch=" + juce::String(numCh) + " samples=" + juce::String(numSamples));
+        logTrace("handleAsyncUpdate: audio info rate=" + juce::String(fileSampleRate) + " ch=" + juce::String(numCh) + " samples=" + juce::String(numSamples));
         if (numSamples <= 0 || numCh <= 0)
         {
             state_.store(State::Failed);
             juce::ScopedLock l(statusLock_);
-            lastError_ = "Invalid WAV (no samples)";
+            lastError_ = "Invalid audio file (no samples)";
             statusText_ = lastError_;
             logErrorToFileAndStderr(lastError_);
             return;
@@ -429,7 +629,7 @@ void AceForgeBridgeAudioProcessor::handleAsyncUpdate()
         {
             state_.store(State::Failed);
             juce::ScopedLock l(statusLock_);
-            lastError_ = "Failed to read WAV samples";
+            lastError_ = "Failed to read audio samples";
             statusText_ = lastError_;
             logErrorToFileAndStderr(lastError_);
             return;
@@ -533,11 +733,26 @@ juce::AudioProcessorEditor* AceForgeBridgeAudioProcessor::createEditor()
 }
 void AceForgeBridgeAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
-    juce::ignoreUnused(destData);
+    juce::String bp, mp;
+    {
+        juce::ScopedLock l(pathsLock_);
+        bp = binariesPath_;
+        mp = modelsPath_;
+    }
+    auto xml = std::make_unique<juce::XmlElement>("AceForgeBridgeState");
+    xml->setAttribute("binariesPath", bp);
+    xml->setAttribute("modelsPath",   mp);
+    copyXmlToBinary(*xml, destData);
 }
 void AceForgeBridgeAudioProcessor::setStateInformation(const void* data, int sizeInBytes)
 {
-    juce::ignoreUnused(data, sizeInBytes);
+    auto xml = getXmlFromBinary(data, sizeInBytes);
+    if (xml && xml->hasTagName("AceForgeBridgeState"))
+    {
+        juce::ScopedLock l(pathsLock_);
+        binariesPath_ = xml->getStringAttribute("binariesPath");
+        modelsPath_   = xml->getStringAttribute("modelsPath");
+    }
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

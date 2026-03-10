@@ -19,18 +19,6 @@ FetchContent_Declare(JUCE
 set(JUCE_ENABLE_GPL_MODE ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(JUCE)
 
-# AceForgeClient static library (macOS implementation)
-set(ACEFORGE_CLIENT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../AceForgeClient)
-add_library(AceForgeClient STATIC
-  ${ACEFORGE_CLIENT_DIR}/AceForgeClientMac.mm
-)
-target_include_directories(AceForgeClient PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
-target_link_libraries(AceForgeClient PUBLIC
-  "-framework Foundation"
-  "-framework Security"
-)
-target_compile_features(AceForgeClient PUBLIC cxx_std_17)
-
 # Plugin target: generator (output-only, no MIDI), not instrument/synth
 juce_add_plugin(AceForgeBridge
   VERSION 0.1.0
@@ -58,16 +46,11 @@ target_compile_definitions(AceForgeBridge
   JUCE_WEB_BROWSER=0
   JUCE_USE_CURL=0
   JUCE_VST3_CAN_REPLACE_VST2=0
-)
-
-target_include_directories(AceForgeBridge
-  PRIVATE
-  ${ACEFORGE_CLIENT_DIR}
+  JUCE_USE_MP3AUDIOFORMAT=1
 )
 
 target_link_libraries(AceForgeBridge
   PRIVATE
-  AceForgeClient
   juce::juce_audio_utils
   juce::juce_audio_formats
   PUBLIC

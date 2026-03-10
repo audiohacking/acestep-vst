@@ -6,13 +6,19 @@ standalone AI inference engine inside the AceForge Bridge AU/VST3 plugin.
 
 ---
 
-## Phase 1 — Submodule & project scaffolding ✅
+## Phase 1 — Submodule, project scaffolding & standalone engine ✅
 
-- [x] Add `acestep.cpp` as a `vendor/` git submodule so it can be updated
-      independently as the upstream project evolves.
+- [x] Add `acestep.cpp` as a `vendor/` git submodule.
 - [x] Update GitHub Actions checkout to pull submodules recursively.
 - [x] Document build steps for both the JUCE plugin and the acestep.cpp engine.
 - [x] Add `.gitignore` rules for submodule build artefacts.
+- [x] **Remove AceForge HTTP server dependency entirely** — plugin is now fully standalone.
+- [x] Replace `AceForgeClient` HTTP generation with `juce::ChildProcess` subprocess pipeline (`ace-qwen3` → `dit-vae`).
+- [x] Remove `AceForgeClient` static library from CMake build.
+- [x] Update state machine: remove `Queued` (HTTP-specific); `Submitting` = LLM step, `Running` = DiT+VAE step.
+- [x] Persist binary and model paths in plugin state (DAW project file via `getStateInformation`/`setStateInformation`).
+- [x] Enable `JUCE_USE_MP3AUDIOFORMAT` to decode MP3 output from `dit-vae`.
+- [x] Update all documentation to reflect standalone design.
 
 ---
 
@@ -57,28 +63,17 @@ standalone AI inference engine inside the AceForge Bridge AU/VST3 plugin.
 
 ---
 
-## Phase 4 — Basic text-to-music generation (acestep.cpp)
+## Phase 4 — Basic text-to-music generation (acestep.cpp) ✅
 
-Replace the existing AceForge HTTP-based generation with a self-contained local
-pipeline using the bundled acestep.cpp binaries.
+The plugin now uses the local `acestep.cpp` subprocess pipeline for all generation.
 
-- [ ] **Binary discovery** — locate `ace-qwen3` and `dit-vae` next to the
-      plugin bundle (or in a configurable path).
-- [ ] **Generation queue** — a background queue that serialises requests so the
-      DAW audio thread is never blocked; show queue position in the UI.
-- [ ] **Request JSON builder** — translate plugin UI fields (prompt, duration,
-      inference steps, guidance scale, instrumental flag) into the
-      `request.json` format accepted by `ace-qwen3`.
-- [ ] **Two-stage pipeline** — run `ace-qwen3` then `dit-vae`; stream stderr
-      progress into the plugin status label.
-- [ ] **Audio result** — load the output WAV/MP3 into the playback buffer and
-      add it to the library, exactly as the current API path does.
-- [ ] **Drag-to-DAW** — improve JUCE drag-and-drop so generated files can be
-      dropped directly onto the DAW timeline at the playhead cursor position
-      (see [JUCE forum reference](https://forum.juce.com/t/drag-and-drop-sources-and-destinations/55859/2)).
-- [ ] **Insert at cursor** — use `juce::DragAndDropContainer::startDraggingExternalFiles`
-      with the generated WAV path so the DAW receives a proper file drop at
-      the current transport position.
+- [x] **Binary discovery** — locate `ace-qwen3` and `dit-vae` next to the plugin bundle (or configurable path).
+- [x] **Generation queue** — single-job-at-a-time guard prevents duplicate background threads.
+- [x] **Request JSON builder** — translates plugin UI fields (prompt, duration, inference steps) into `request.json`.
+- [x] **Two-stage pipeline** — `ace-qwen3` (LLM) then `dit-vae` (DiT+VAE); status label reflects each step.
+- [x] **Audio result** — output WAV/MP3 is decoded and pushed to the playback buffer; saved to the library.
+- [ ] **Drag-to-DAW** — improve drag so files land at the DAW timeline cursor position.
+- [ ] **Insert at cursor** — use `juce::DragAndDropContainer::startDraggingExternalFiles` with the WAV path.
 
 ---
 

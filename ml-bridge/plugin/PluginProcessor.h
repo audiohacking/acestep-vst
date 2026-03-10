@@ -3,7 +3,6 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_core/juce_core.h>
-#include "AceForgeClient/AceForgeClient.hpp"
 #include <atomic>
 #include <memory>
 #include <vector>
@@ -12,11 +11,12 @@ class AceForgeBridgeAudioProcessor : public juce::AudioProcessor,
                                      public juce::AsyncUpdater
 {
 public:
+    // Submitting = running ace-qwen3 (LLM step)
+    // Running    = running dit-vae  (DiT+VAE synthesis step)
     enum class State
     {
         Idle,
         Submitting,
-        Queued,
         Running,
         Succeeded,
         Failed
@@ -43,7 +43,7 @@ public:
     void setCurrentProgram(int index) override;
     const juce::String getProgramName(int index) override;
     void changeProgramName(int index, const juce::String& newName) override;
-    
+
     bool isBusesLayoutSupported(const juce::AudioProcessor::BusesLayout& layouts) const override;
 
     void getStateInformation(juce::MemoryBlock& destData) override;
@@ -52,13 +52,22 @@ public:
     void handleAsyncUpdate() override;
 
     // Generation (call from UI or elsewhere; runs on background thread)
-    void startGeneration(const juce::String& prompt, int durationSeconds = 10, int inferenceSteps = 15);
-    void setBaseUrl(const juce::String& url);
+    void startGeneration(const juce::String& prompt, int durationSeconds = 10, int inferenceSteps = 8);
+
+    // Path to directory containing ace-qwen3 and dit-vae binaries
+    void setBinariesPath(const juce::String& path);
+    juce::String getBinariesPath() const;
+
+    // Path to directory containing GGUF model files
+    void setModelsPath(const juce::String& path);
+    juce::String getModelsPath() const;
+
+    // Returns true when both binaries exist in the configured (or default) location
+    bool areBinariesReady() const;
 
     State getState() const { return state_.load(); }
     juce::String getStatusText() const;
     juce::String getLastError() const;
-    bool isConnected() const { return connected_; }
 
     // Library of saved generations (on disk) for drag-into-DAW
     struct LibraryEntry
@@ -68,6 +77,7 @@ public:
         juce::Time time;
     };
     juce::File getLibraryDirectory() const;
+    juce::File getModelsDirectory() const;
     std::vector<LibraryEntry> getLibraryEntries() const;
     void addToLibrary(const juce::File& wavFile, const juce::String& prompt);
 
@@ -75,10 +85,12 @@ private:
     void runGenerationThread(juce::String prompt, int durationSec, int inferenceSteps);
     void pushSamplesToPlayback(const float* interleaved, int numFrames, int sourceChannels, double sourceSampleRate);
 
-    std::unique_ptr<aceforge::AceForgeClient> client_;
-    juce::String baseUrl_;
+    // Paths to the acestep.cpp binaries and model files (persisted in plugin state)
+    juce::CriticalSection pathsLock_;
+    juce::String binariesPath_;   // directory containing ace-qwen3 / dit-vae
+    juce::String modelsPath_;     // directory containing GGUF model files
+
     std::atomic<State> state_{ State::Idle };
-    std::atomic<bool> connected_{ false };
     juce::CriticalSection statusLock_;
     juce::String lastError_;
     juce::String statusText_;
@@ -88,18 +100,20 @@ private:
     std::vector<float> playbackBuffer_;
     std::atomic<bool> playbackBufferReady_{ false };
 
-    // Double-buffer handoff: message thread writes to one buffer, audio thread reads from the other. Avoids race where message thread resize() invalidates pointer audio thread is reading.
+    // Double-buffer handoff: message thread writes to one buffer, audio thread reads from the other.
+    // Avoids race where message thread resize() invalidates pointer audio thread is reading.
     std::vector<float> pendingPlaybackBuffer_[2];
     std::atomic<int> pendingPlaybackFrames_{ 0 };
     std::atomic<int> pendingPlaybackBufferIndex_{ 0 }; // which buffer has new data (0 or 1)
-    std::atomic<int> nextWriteIndex_{ 0 };           // which buffer message thread will write next
+    std::atomic<int> nextWriteIndex_{ 0 };             // which buffer message thread will write next
     std::atomic<bool> pendingPlaybackReady_{ false };
 
     std::atomic<double> sampleRate_{ 44100.0 };
 
-    // Pending WAV bytes from background thread; decoded on message thread (JUCE not thread-safe)
+    // Pending audio bytes from background thread; decoded on message thread (JUCE not thread-safe)
     juce::CriticalSection pendingWavLock_;
     std::vector<uint8_t> pendingWavBytes_;
+    juce::String pendingAudioExt_;  // "wav" or "mp3"
     juce::String pendingPrompt_;
     int pendingDurationSec_{ 0 };
 

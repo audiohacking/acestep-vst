@@ -1,13 +1,13 @@
-# AceForge Bridge — AU/VST3 Plugin for AceForge
+# AceForge Bridge — AU/VST3 Plugin
 
-Experimental **AU** and **VST3** plugin that connects your DAW to the [AceForge](https://github.com/audiohacking/aceforge) API for text-to-music generation and playback (ACE-Step, etc.).
+Experimental **AU** and **VST3** plugin for **macOS (Apple Silicon)** that runs **local AI music generation** inside your DAW using [acestep.cpp](https://github.com/ServeurpersoCom/acestep.cpp) — no external server required.
 
 - **Target:** macOS (Apple Silicon); build via CMake + JUCE.
-- **API:** Local HTTP, e.g. `http://127.0.0.1:5056` (AceForge server must be running).
+- **Engine:** `ace-qwen3` + `dit-vae` from `acestep.cpp` (submodule at `vendor/acestep.cpp`).
 
 ## What it does
 
-- **Generate** — Enter a prompt, set duration and quality, click Generate. The plugin talks to AceForge and plays the result once through the plugin output.
+- **Generate** — Enter a prompt, set duration and quality, click Generate. The plugin runs the local inference engine and plays the result once through the plugin output.
 - **Library** — Successful generations are saved as WAVs; the plugin lists them (newest first). You can **Insert into DAW** (opens the file in Logic Pro) or **Reveal in Finder** and drag the file into your DAW timeline.
 
 Full description, build details, and installer steps: **ml-bridge/README.md**.
@@ -36,22 +36,25 @@ Full description, build details, and installer steps: **ml-bridge/README.md**.
    ```
    See [`vendor/acestep.cpp/README.md`](vendor/acestep.cpp/README.md) for Linux (CUDA/ROCm/Vulkan) instructions.
 
-4. **Install** — Copy the built `.component` and `.vst3` from the build tree into your plug-in folders, or build the installer:
+4. **Download models** (~7.7 GB):
+   ```bash
+   cd vendor/acestep.cpp && pip install hf && ./models.sh
+   ```
+
+5. **Install** — Copy the built `.component` and `.vst3` from the build tree into your plug-in folders, or build the installer:
    ```bash
    ./scripts/build-installer-pkg.sh --sign-plugins --version 0.1.0
    ```
    Then install `release-artefacts/AceForgeBridge-macOS-Installer.pkg` (or open it in Finder).
 
-5. Rescan plugins in your DAW; run AceForge so the API is available at `http://127.0.0.1:5056`.
+6. **Place binaries and models** where the plugin can find them (see `ml-bridge/README.md` for the exact paths), then rescan plugins in your DAW.
 
 ## Repo layout
 
 | Path | Description |
 |------|-------------|
-| **ml-bridge/** | Plugin source, AceForge client, and docs |
+| **ml-bridge/** | Plugin source and docs |
 | **ml-bridge/plugin/** | JUCE AU + VST3 target (CMake) |
-| **ml-bridge/AceForgeClient/** | C++ HTTP client for AceForge API (macOS) |
-| **ml-bridge/AceForge.md** | API summary for the plugin |
 | **ml-bridge/BUILD_AND_CI.md** | Build and GitHub Actions release |
 | **vendor/acestep.cpp/** | [acestep.cpp](https://github.com/ServeurpersoCom/acestep.cpp) submodule — local AI inference engine |
 | **ROADMAP.md** | Feature roadmap for local AI integration |
@@ -63,4 +66,4 @@ Creating a **GitHub Release** (e.g. tag `v0.1.0`) triggers the workflow and atta
 
 ## License
 
-See repository license. Plugin uses JUCE (GPL mode) and talks to the AceForge API.
+See repository license. Plugin uses JUCE (GPL mode).

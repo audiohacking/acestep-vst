@@ -86,7 +86,7 @@ AceForgeBridgeAudioProcessorEditor::AceForgeBridgeAudioProcessorEditor(
 {
     setSize(460, 500);
 
-    connectionLabel.setText("Checking...", juce::dontSendNotification);
+    connectionLabel.setText("Engine: checking…", juce::dontSendNotification);
     connectionLabel.setColour(juce::Label::textColourId, juce::Colours::white);
     connectionLabel.setJustificationType(juce::Justification::left);
     addAndMakeVisible(connectionLabel);
@@ -145,7 +145,7 @@ AceForgeBridgeAudioProcessorEditor::AceForgeBridgeAudioProcessorEditor(
     revealInFinderButton.onClick = [this] { revealSelectedInFinder(); };
     addAndMakeVisible(revealInFinderButton);
 
-    libraryHintLabel.setText("In Logic: select a row, click Insert into DAW (opens in Logic) or Reveal in Finder and drag the file onto the timeline.", juce::dontSendNotification);
+    libraryHintLabel.setText("Select a row, click Insert into DAW (opens in Logic Pro) or Reveal in Finder and drag the file onto the timeline.", juce::dontSendNotification);
     libraryHintLabel.setColour(juce::Label::textColourId, juce::Colours::lightgrey);
     libraryHintLabel.setFont(juce::Font(juce::FontOptions().withPointHeight(10.0f)));
     libraryHintLabel.setMinimumHorizontalScale(1.0f);
@@ -187,12 +187,13 @@ void AceForgeBridgeAudioProcessorEditor::updateStatusFromProcessor()
     const auto state = processorRef.getState();
     if (state == AceForgeBridgeAudioProcessor::State::Succeeded)
         refreshLibraryList();
-    if (processorRef.isConnected())
-        connectionLabel.setText("AceForge: connected", juce::dontSendNotification);
+
+    if (processorRef.areBinariesReady())
+        connectionLabel.setText("Engine: ready", juce::dontSendNotification);
     else if (state == AceForgeBridgeAudioProcessor::State::Failed)
-        connectionLabel.setText("AceForge: error (see status)", juce::dontSendNotification);
+        connectionLabel.setText("Engine: error (see status)", juce::dontSendNotification);
     else
-        connectionLabel.setText("AceForge: not connected - start AceForge?", juce::dontSendNotification);
+        connectionLabel.setText("Engine: binaries not found — build acestep.cpp first", juce::dontSendNotification);
 
     statusLabel.setText(processorRef.getStatusText(), juce::dontSendNotification);
     if (state == AceForgeBridgeAudioProcessor::State::Failed)
@@ -201,7 +202,6 @@ void AceForgeBridgeAudioProcessorEditor::updateStatusFromProcessor()
         statusLabel.setColour(juce::Label::textColourId, juce::Colours::lightgrey);
 
     const bool busy = (state == AceForgeBridgeAudioProcessor::State::Submitting ||
-                      state == AceForgeBridgeAudioProcessor::State::Queued ||
                       state == AceForgeBridgeAudioProcessor::State::Running);
     generateButton.setEnabled(!busy);
 }
