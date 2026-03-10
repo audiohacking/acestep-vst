@@ -16,7 +16,7 @@ Standalone **AU** and **VST3** plugin for local AI music generation in your DAW 
 - **Loop playback** — preview any library entry on loop inside the plugin output.
 - **Settings** — configure binary directory, models directory, and output directory; all persisted in the DAW project.
 
-<img width="946" height="523" alt="image" src="https://github.com/user-attachments/assets/7c5c5022-3ee3-412d-87b5-132cff173261" />
+<img width="844" height="520" alt="image" src="https://github.com/user-attachments/assets/335c76bb-a519-48fd-b8f6-9da3f38e093e" />
 
 
 ## Quick start
