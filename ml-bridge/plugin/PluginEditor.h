@@ -85,12 +85,16 @@ private:
     // ── Generate tab ──────────────────────────────────────────────────────────
     juce::Label      promptLabel_;
     juce::TextEditor promptEditor_;
+    juce::Label      lyricsLabel_;
+    juce::TextEditor lyricsEditor_;
     juce::Label      durationLabel_;
     juce::ComboBox   durationCombo_;
     juce::Label      stepsLabel_;
     juce::ComboBox   stepsCombo_;
     juce::Label      bpmLabel_;
     juce::TextEditor bpmEditor_;
+    juce::Label      seedLabel_;
+    juce::TextEditor seedEditor_;
     bool             bpmAutoUpdated_{ true };
 
     // Mode buttons — Text-to-Music vs Cover
@@ -142,6 +146,7 @@ private:
     // ── Library cache ─────────────────────────────────────────────────────────
     std::vector<AcestepAudioProcessor::LibraryEntry> libraryCache_;
     int  libraryRefreshTick_{ 0 };
+    AcestepAudioProcessor::State lastState_{ AcestepAudioProcessor::State::Idle };
 
     // ── Feedback ──────────────────────────────────────────────────────────────
     juce::String feedbackMsg_;

@@ -61,6 +61,17 @@ static const juce::StringArray kAudioExts{ "wav", "mp3" };
 } // namespace
 
 // ═════════════════════════════════════════════════════════════════════════════
+// Global config helpers
+// ═════════════════════════════════════════════════════════════════════════════
+
+static juce::File getGlobalConfigFile()
+{
+    return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+               .getChildFile("AcestepVST")
+               .getChildFile("config.xml");
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 // Construction
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -79,6 +90,8 @@ AcestepAudioProcessor::AcestepAudioProcessor()
         juce::ScopedLock l(statusLock_);
         statusText_ = "Idle \xe2\x80\x94 enter a prompt and click Generate.";
     }
+    // Load globally-persisted paths so they are available even in a fresh project.
+    loadSettingsFromGlobalConfig();
 }
 
 AcestepAudioProcessor::~AcestepAudioProcessor()
@@ -92,7 +105,8 @@ AcestepAudioProcessor::~AcestepAudioProcessor()
 
 void AcestepAudioProcessor::setBinariesPath(const juce::String& p)
 {
-    juce::ScopedLock l(pathsLock_); binariesPath_ = p;
+    { juce::ScopedLock l(pathsLock_); binariesPath_ = p; }
+    saveSettingsToGlobalConfig();
 }
 juce::String AcestepAudioProcessor::getBinariesPath() const
 {
@@ -101,7 +115,8 @@ juce::String AcestepAudioProcessor::getBinariesPath() const
 
 void AcestepAudioProcessor::setModelsPath(const juce::String& p)
 {
-    juce::ScopedLock l(pathsLock_); modelsPath_ = p;
+    { juce::ScopedLock l(pathsLock_); modelsPath_ = p; }
+    saveSettingsToGlobalConfig();
 }
 juce::String AcestepAudioProcessor::getModelsPath() const
 {
@@ -110,7 +125,8 @@ juce::String AcestepAudioProcessor::getModelsPath() const
 
 void AcestepAudioProcessor::setOutputPath(const juce::String& p)
 {
-    juce::ScopedLock l(pathsLock_); outputPath_ = p;
+    { juce::ScopedLock l(pathsLock_); outputPath_ = p; }
+    saveSettingsToGlobalConfig();
 }
 juce::String AcestepAudioProcessor::getOutputPath() const
 {
@@ -275,7 +291,8 @@ void AcestepAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
 void AcestepAudioProcessor::startGeneration(const juce::String& prompt,
                                              int durationSeconds, int inferenceSteps,
                                              juce::File coverFile, float coverStrength,
-                                             float bpm)
+                                             float bpm,
+                                             const juce::String& lyrics, int seed)
 {
     // Only one generation at a time.
     State expected = state_.load();
@@ -291,7 +308,9 @@ void AcestepAudioProcessor::startGeneration(const juce::String& prompt,
     triggerAsyncUpdate();
     std::thread t(&AcestepAudioProcessor::runGenerationThread, this,
                   prompt, durationSeconds, inferenceSteps,
-                  std::move(coverFile), coverStrength, bpm);
+                  std::move(coverFile), coverStrength, bpm,
+                  lyrics,
+                  seed);
     t.detach();
 }
 
@@ -301,7 +320,8 @@ void AcestepAudioProcessor::startGeneration(const juce::String& prompt,
 
 void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int durationSec,
                                                  int inferenceSteps, juce::File coverFile,
-                                                 float coverStrength, float bpm)
+                                                 float coverStrength, float bpm,
+                                                 juce::String lyrics, int seed)
 {
     // ── 1. Resolve binary and model directories ───────────────────────────────
     juce::String bp, mp;
@@ -367,7 +387,7 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
     {
         auto* obj = new juce::DynamicObject();
         obj->setProperty("caption",         prompt);
-        obj->setProperty("lyrics",          "[Instrumental]");
+        obj->setProperty("lyrics",          lyrics.isEmpty() ? "[Instrumental]" : lyrics);
         obj->setProperty("inference_steps", inferenceSteps <= 0 ? 8 : inferenceSteps);
         obj->setProperty("duration",        durationSec   <= 0 ? 10 : durationSec);
 
@@ -375,6 +395,10 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
         float effectiveBpm = bpm > 0.0f ? bpm : static_cast<float>(hostBpm_.load(std::memory_order_relaxed));
         if (effectiveBpm > 0.0f)
             obj->setProperty("bpm", juce::roundToInt(effectiveBpm));
+
+        // Seed: -1 means random / let the engine choose
+        if (seed >= 0)
+            obj->setProperty("seed", seed);
 
         // Cover / repaint mode
         const bool isCover = coverFile.existsAsFile();
@@ -899,6 +923,38 @@ bool AcestepAudioProcessor::importAudioFile(const juce::File& sourceFile)
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+// Global config — persists settings across all DAW sessions / projects
+// ═════════════════════════════════════════════════════════════════════════════
+
+void AcestepAudioProcessor::saveSettingsToGlobalConfig() const
+{
+    juce::String bp, mp, op;
+    { juce::ScopedLock l(pathsLock_); bp = binariesPath_; mp = modelsPath_; op = outputPath_; }
+    auto xml = std::make_unique<juce::XmlElement>("AcestepConfig");
+    xml->setAttribute("binariesPath", bp);
+    xml->setAttribute("modelsPath",   mp);
+    xml->setAttribute("outputPath",   op);
+    juce::File cfg = getGlobalConfigFile();
+    cfg.getParentDirectory().createDirectory();
+    xml->writeTo(cfg);
+}
+
+void AcestepAudioProcessor::loadSettingsFromGlobalConfig()
+{
+    juce::File cfg = getGlobalConfigFile();
+    if (!cfg.existsAsFile()) return;
+    auto xml = juce::XmlDocument::parse(cfg);
+    if (xml && xml->hasTagName("AcestepConfig"))
+    {
+        juce::ScopedLock l(pathsLock_);
+        binariesPath_ = xml->getStringAttribute("binariesPath");
+        modelsPath_   = xml->getStringAttribute("modelsPath");
+        outputPath_   = xml->getStringAttribute("outputPath");
+        logTrace("Global config loaded");
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 // Status accessors
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -957,10 +1013,14 @@ void AcestepAudioProcessor::setStateInformation(const void* data, int sizeInByte
     auto xml = getXmlFromBinary(data, sizeInBytes);
     if (xml && xml->hasTagName("AcestepState"))
     {
-        juce::ScopedLock l(pathsLock_);
-        binariesPath_ = xml->getStringAttribute("binariesPath");
-        modelsPath_   = xml->getStringAttribute("modelsPath");
-        outputPath_   = xml->getStringAttribute("outputPath");
+        {
+            juce::ScopedLock l(pathsLock_);
+            binariesPath_ = xml->getStringAttribute("binariesPath");
+            modelsPath_   = xml->getStringAttribute("modelsPath");
+            outputPath_   = xml->getStringAttribute("outputPath");
+        }
+        // Keep global config in sync so paths survive fresh projects too.
+        saveSettingsToGlobalConfig();
     }
 }
 
