@@ -1,6 +1,8 @@
 # acestep-vst
 
-Standalone **AU** and **VST3** plugin for **macOS (Apple Silicon)** that runs local AI music generation directly in your DAW — no server, no cloud, no AceForge API. Powered by [acestep.cpp](https://github.com/ServeurpersoCom/acestep.cpp).
+Standalone **AU** and **VST3** plugin for local AI music generation in your DAW — no servers, no cloud, no APIs. 
+
+> Powered by [acestep.cpp](https://github.com/ServeurpersoCom/acestep.cpp).
 
 ## Features
 
