@@ -10,8 +10,8 @@ class AcestepAudioProcessor : public juce::AudioProcessor,
                               public juce::AsyncUpdater
 {
 public:
-    // Submitting = running ace-qwen3 (LLM step, text-to-music) or preparing cover request
-    // Running    = running dit-vae  (DiT + VAE synthesis)
+    // Submitting = running ace-lm (LLM step, text-to-music) or preparing cover request
+    // Running    = running ace-synth (DiT + VAE synthesis)
     enum class State { Idle, Submitting, Running, Succeeded, Failed };
 
     AcestepAudioProcessor();
@@ -49,7 +49,7 @@ public:
     void loadSettingsFromGlobalConfig();
 
     // ── Generation ────────────────────────────────────────────────────────────
-    // coverFile : non-empty → cover / repaint mode (pass --src-audio to dit-vae).
+    // coverFile : non-empty → cover / repaint mode (pass --src-audio to ace-synth).
     // bpm       : 0 = auto-detect from DAW playhead.
     // lyrics    : lyrics text; use "[Instrumental]" for no vocals.
     // seed      : -1 = random.

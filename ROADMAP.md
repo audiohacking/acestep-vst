@@ -9,9 +9,9 @@ Tracks planned features for the standalone **acestep-vst** AU/VST3 plugin powere
 
 - [x] Add `acestep.cpp` as `vendor/` git submodule.
 - [x] Remove AceForge HTTP server dependency entirely.
-- [x] Replace `AceForgeClient` HTTP pipeline with `juce::ChildProcess` subprocess pipeline (`ace-qwen3` → `dit-vae`).
+- [x] Replace `AceForgeClient` HTTP pipeline with `juce::ChildProcess` subprocess pipeline (`ace-lm` → `ace-synth`).
 - [x] **Rename plugin** from "AceForge Bridge" to **"acestep-vst"** (`AcestepVST` CMake target, `AcestepAudioProcessor` class).
-- [x] Enable `JUCE_USE_MP3AUDIOFORMAT` to decode MP3 output from `dit-vae`.
+- [x] Enable `JUCE_USE_MP3AUDIOFORMAT` to decode MP3 output from `ace-synth`.
 - [x] Persist binary/model/output paths in DAW project state.
 
 ---
@@ -35,7 +35,7 @@ Tracks planned features for the standalone **acestep-vst** AU/VST3 plugin powere
 - [x] **Reference audio** — Browse… or drag-drop a WAV/MP3 as the source audio for cover mode.
 - [x] **Cover strength slider** — 0–1 slider controls how closely the output follows the reference.
 - [x] **Mode toggle** — "Text-to-Music" vs "Cover Mode" buttons with clear visual distinction.
-- [x] Pass `--src-audio` and `--cover-strength` to `dit-vae` CLI.
+- [x] Pass `--src-audio` and `--cover-strength` to `ace-synth` CLI.
 - [x] Embed `src_audio`, `cover_strength`, and `task_type: "cover"` in `request.json`.
 
 ---
@@ -44,7 +44,7 @@ Tracks planned features for the standalone **acestep-vst** AU/VST3 plugin powere
 
 - [x] **Settings tab** — configure binaries directory, models directory, and output directory; changes persisted in DAW project XML.
 - [x] **BPM auto-detect** — read BPM from the DAW playhead in every `processBlock()`; auto-populate the BPM field (editable override).
-- [x] **BPM in request.json** — pass detected/entered BPM to `ace-qwen3` for rhythmically consistent output.
+- [x] **BPM in request.json** — pass detected/entered BPM to `ace-lm` for rhythmically consistent output.
 
 ---
 

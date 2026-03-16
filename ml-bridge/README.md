@@ -9,7 +9,7 @@ JUCE **AU** and **VST3** plugin that runs **local AI music generation** directly
 
 ## What the plugin does
 
-1. **Generate** — Enter a prompt (e.g. "upbeat electronic beat, 10s"), choose duration (10–30 s) and quality (Fast / High), click **Generate**. The plugin runs `ace-qwen3` (LLM step) then `dit-vae` (DiT+VAE synthesis) locally and plays the result through the plugin output.
+1. **Generate** — Enter a prompt (e.g. "upbeat electronic beat, 10s"), choose duration (10–30 s) and quality (Fast / High), click **Generate**. The plugin runs `ace-lm` (LLM step) then `ace-synth` (DiT+VAE synthesis) locally and plays the result through the plugin output.
 2. **Playback** — When generation succeeds, the audio plays once through the plugin output (so you can hear it and/or record the track in the DAW).
 3. **Library** — Each successful generation is saved as a WAV under **~/Library/Application Support/AcestepVST/Generations/** (e.g. `gen_20250206_143022.wav`). The plugin UI shows a **Library** list (newest first) with a **Refresh** button.
 4. **Add to DAW** — Select a library row, then:
@@ -22,7 +22,7 @@ JUCE **AU** and **VST3** plugin that runs **local AI music generation** directly
 ## Requirements
 
 - macOS (Apple Silicon). AU and VST3 are built; install and rescan in your DAW.
-- **acestep.cpp binaries** (`ace-qwen3` and `dit-vae`) built and placed where the plugin can find them (see below).
+- **acestep.cpp binaries** (`ace-lm` and `ace-synth`) built and placed where the plugin can find them (see below).
 - **ACE-Step GGUF models** downloaded (see below).
 
 ---
@@ -67,7 +67,7 @@ cmake -B vendor/acestep.cpp/build vendor/acestep.cpp
 cmake --build vendor/acestep.cpp/build --config Release -j$(sysctl -n hw.logicalcpu)
 ```
 
-This produces `ace-qwen3` and `dit-vae` in `vendor/acestep.cpp/build/`.
+This produces `ace-lm` and `ace-synth` in `vendor/acestep.cpp/build/`.
 
 ### 4. Download ACE-Step models
 
@@ -85,8 +85,8 @@ You can configure the paths to the binaries and models directly in the plugin's 
 
 ```bash
 # Default binaries location: next to the AU bundle
-~/Library/Audio/Plug-Ins/Components/ace-qwen3
-~/Library/Audio/Plug-Ins/Components/dit-vae
+~/Library/Audio/Plug-Ins/Components/ace-lm
+~/Library/Audio/Plug-Ins/Components/ace-synth
 
 # Default models location:
 ~/Library/Application Support/AcestepVST/models/
@@ -99,8 +99,8 @@ To use the defaults, copy the files there:
 
 ```bash
 # Copy binaries next to the AU bundle (default location)
-cp vendor/acestep.cpp/build/ace-qwen3 ~/Library/Audio/Plug-Ins/Components/
-cp vendor/acestep.cpp/build/dit-vae   ~/Library/Audio/Plug-Ins/Components/
+cp vendor/acestep.cpp/build/ace-lm     ~/Library/Audio/Plug-Ins/Components/
+cp vendor/acestep.cpp/build/ace-synth  ~/Library/Audio/Plug-Ins/Components/
 
 # Copy models to the default models directory
 mkdir -p ~/Library/Application\ Support/AcestepVST/models/
@@ -137,7 +137,7 @@ See **BUILD_AND_CI.md** for details and GitHub Actions release.
 
 ## Architecture (brief)
 
-- **Plugin:** Stereo output. Background thread: writes `request.json` to a temp directory → spawns `ace-qwen3` (LLM: generates lyrics + audio codes) → spawns `dit-vae` (DiT+VAE: synthesises audio) → reads output WAV/MP3 → hands bytes to message thread → decodes (WAV or MP3) → fills double-buffered playback FIFO → saves to library.
+- **Plugin:** Stereo output. Background thread: writes `request.json` to a temp directory → spawns `ace-lm` (LLM: generates lyrics + audio codes) → spawns `ace-synth` (DiT+VAE: synthesises audio) → reads output WAV/MP3 → hands bytes to message thread → decodes (WAV or MP3) → fills double-buffered playback FIFO → saves to library.
 - **No external server.** All inference runs locally via `acestep.cpp` subprocesses.
 - **Binary and model paths** are persisted in the plugin state (DAW project file). They can be configured in the **Settings** tab in the plugin UI. They default to: binaries next to the plugin bundle, models in `~/Library/Application Support/AcestepVST/models/`.
 
@@ -147,6 +147,6 @@ See **BUILD_AND_CI.md** for details and GitHub Actions release.
 
 See **ROADMAP.md** in the repo root for the full feature plan.
 
-- **Cover / repaint mode:** Pass a source audio file to `dit-vae --src-audio`.
+- **Cover / repaint mode:** Pass a source audio file to `ace-synth --src-audio`.
 - **Lego / stem mode:** Multi-track generation.
 - **Windows / Linux builds** via CI.

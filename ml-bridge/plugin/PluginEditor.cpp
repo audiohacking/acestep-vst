@@ -330,7 +330,7 @@ AcestepAudioProcessorEditor::AcestepAudioProcessorEditor(AcestepAudioProcessor& 
 
     // ── Settings tab components ────────────────────────────────────────────────
     styleLabel(binPathLabel_);
-    binPathLabel_.setText("Binaries directory (ace-qwen3, dit-vae):", juce::dontSendNotification);
+    binPathLabel_.setText("Binaries directory (ace-lm, ace-synth):", juce::dontSendNotification);
     addChildComponent(binPathLabel_);
 
     for (auto* te : { &binPathEditor_, &modelsPathEditor_, &outputPathEditor_ })
