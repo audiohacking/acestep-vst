@@ -51,8 +51,8 @@ const char* stateToString(AcestepAudioProcessor::State s)
 }
 
 // ── Subprocess timeouts ───────────────────────────────────────────────────────
-static constexpr int kLmTimeoutMs      = 300'000;  // ace-qwen3: 5 min
-static constexpr int kDitTimeoutMs     = 600'000;  // dit-vae:  10 min
+static constexpr int kLmTimeoutMs      = 300'000;  // ace-lm:    5 min
+static constexpr int kDitTimeoutMs     = 600'000;  // ace-synth: 10 min
 // ── Stereo channel count used throughout the playback pipeline ────────────────
 static constexpr int kNumOutputChannels = 2;
 // ── Supported audio extensions (in priority order) ────────────────────────────
@@ -161,8 +161,8 @@ bool AcestepAudioProcessor::areBinariesReady() const
     juce::File binDir = bp.isEmpty()
         ? juce::File::getSpecialLocation(juce::File::currentApplicationFile).getParentDirectory()
         : juce::File(bp);
-    return binDir.getChildFile("ace-qwen3").existsAsFile()
-        && binDir.getChildFile("dit-vae").existsAsFile();
+    return binDir.getChildFile("ace-lm").existsAsFile()
+        && binDir.getChildFile("ace-synth").existsAsFile();
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -331,10 +331,10 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
         ? juce::File::getSpecialLocation(juce::File::currentApplicationFile).getParentDirectory()
         : juce::File(bp);
 
-    juce::File aceQwen3 = binDir.getChildFile("ace-qwen3");
-    juce::File ditVae   = binDir.getChildFile("dit-vae");
+    juce::File aceLm     = binDir.getChildFile("ace-lm");
+    juce::File aceSynth  = binDir.getChildFile("ace-synth");
 
-    if (!aceQwen3.existsAsFile() || !ditVae.existsAsFile())
+    if (!aceLm.existsAsFile() || !aceSynth.existsAsFile())
     {
         state_.store(State::Failed);
         juce::ScopedLock l(statusLock_);
@@ -424,7 +424,7 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
     }
     logTrace("request.json written to " + requestFile.getFullPathName());
 
-    // ── 4. ace-qwen3 (LLM: text → audio codes) ───────────────────────────────
+    // ── 4. ace-lm (LLM: text → audio codes) ─────────────────────────────────
     {
         juce::ScopedLock l(statusLock_);
         statusText_ = stateToString(State::Submitting);
@@ -432,7 +432,7 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
     triggerAsyncUpdate();
 
     juce::StringArray lmArgs;
-    lmArgs.add(aceQwen3.getFullPathName());
+    lmArgs.add(aceLm.getFullPathName());
     lmArgs.add("--request"); lmArgs.add(requestFile.getFullPathName());
     lmArgs.add("--model");   lmArgs.add(lmModel.getFullPathName());
 
@@ -441,7 +441,7 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
     {
         state_.store(State::Failed);
         juce::ScopedLock l(statusLock_);
-        lastError_ = "Failed to start ace-qwen3: " + aceQwen3.getFullPathName();
+        lastError_ = "Failed to start ace-lm: " + aceLm.getFullPathName();
         statusText_ = lastError_;
         logError(lastError_);
         triggerAsyncUpdate();
@@ -450,12 +450,12 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
     }
     lmProc.waitForProcessToFinish(kLmTimeoutMs);
     const int lmExit = static_cast<int>(lmProc.getExitCode());
-    logTrace("ace-qwen3 exit=" + juce::String(lmExit));
+    logTrace("ace-lm exit=" + juce::String(lmExit));
     if (lmExit != 0)
     {
         state_.store(State::Failed);
         juce::ScopedLock l(statusLock_);
-        lastError_ = "ace-qwen3 failed (exit " + juce::String(lmExit) + ")";
+        lastError_ = "ace-lm failed (exit " + juce::String(lmExit) + ")";
         statusText_ = lastError_;
         logError(lastError_);
         triggerAsyncUpdate();
@@ -468,7 +468,7 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
     {
         state_.store(State::Failed);
         juce::ScopedLock l(statusLock_);
-        lastError_ = "ace-qwen3 did not produce request0.json in " + tmpDir.getFullPathName();
+        lastError_ = "ace-lm did not produce request0.json in " + tmpDir.getFullPathName();
         statusText_ = lastError_;
         logError(lastError_);
         triggerAsyncUpdate();
@@ -476,7 +476,7 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
         return;
     }
 
-    // ── 5. dit-vae (DiT + VAE: synthesise audio) ──────────────────────────────
+    // ── 5. ace-synth (DiT + VAE: synthesise audio) ────────────────────────────
     state_.store(State::Running);
     {
         juce::ScopedLock l(statusLock_);
@@ -485,7 +485,7 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
     triggerAsyncUpdate();
 
     juce::StringArray ditArgs;
-    ditArgs.add(ditVae.getFullPathName());
+    ditArgs.add(aceSynth.getFullPathName());
     ditArgs.add("--request");      ditArgs.add(enrichedRequest.getFullPathName());
     ditArgs.add("--text-encoder"); ditArgs.add(textEncoderModel.getFullPathName());
     ditArgs.add("--dit");          ditArgs.add(ditModel.getFullPathName());
@@ -503,7 +503,7 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
     {
         state_.store(State::Failed);
         juce::ScopedLock l(statusLock_);
-        lastError_ = "Failed to start dit-vae: " + ditVae.getFullPathName();
+        lastError_ = "Failed to start ace-synth: " + aceSynth.getFullPathName();
         statusText_ = lastError_;
         logError(lastError_);
         triggerAsyncUpdate();
@@ -512,12 +512,12 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
     }
     ditProc.waitForProcessToFinish(kDitTimeoutMs);
     const int ditExit = static_cast<int>(ditProc.getExitCode());
-    logTrace("dit-vae exit=" + juce::String(ditExit));
+    logTrace("ace-synth exit=" + juce::String(ditExit));
     if (ditExit != 0)
     {
         state_.store(State::Failed);
         juce::ScopedLock l(statusLock_);
-        lastError_ = "dit-vae failed (exit " + juce::String(ditExit) + ")";
+        lastError_ = "ace-synth failed (exit " + juce::String(ditExit) + ")";
         statusText_ = lastError_;
         logError(lastError_);
         triggerAsyncUpdate();
@@ -548,7 +548,7 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
     {
         state_.store(State::Failed);
         juce::ScopedLock l(statusLock_);
-        lastError_ = "dit-vae produced no output in " + tmpDir.getFullPathName();
+        lastError_ = "ace-synth produced no output in " + tmpDir.getFullPathName();
         statusText_ = lastError_;
         logError(lastError_);
         triggerAsyncUpdate();
