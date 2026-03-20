@@ -1,8 +1,7 @@
 #pragma once
 
 #include <memory>
-#include <juce_audio_basics/juce_audio_basics.h>
-#include <juce_audio_formats/juce_audio_formats.h>
+#include <juce_audio_utils/juce_audio_utils.h>
 
 // ── PluginPreview ──────────────────────────────────────────────────────────────
 // Wraps juce::AudioTransportSource so the processor can play generated audio and
