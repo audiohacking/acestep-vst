@@ -129,7 +129,13 @@ private:
     juce::TextButton deleteButton_   { "Delete"                      };
     juce::TextButton useAsRefButton_ { "Use as Reference"            };
     juce::TextButton insertDawButton_{ "Insert into DAW"             };
+#if JUCE_MAC
     juce::TextButton revealButton_   { "Reveal in Finder"            };
+#elif JUCE_WINDOWS
+    juce::TextButton revealButton_   { "Reveal in Explorer"          };
+#else
+    juce::TextButton revealButton_   { "Reveal in Files"             };
+#endif
     juce::Label      libHintLabel_;
 
     bool fileDragHighlight_{ false };

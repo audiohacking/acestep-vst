@@ -1,5 +1,8 @@
-# Build and release acestep-vst AU + VST3 (macOS); manufacturer AudioHacking
-name: Build and release plugins (macOS)
+# Build and release acestep-vst plugins for all supported platforms.
+# Each bundle includes the matching pre-built acestep.cpp binaries
+# (ace-lm + ace-synth + runtime libs) embedded inside the plugin bundle,
+# so the plugin works with zero configuration after installation.
+name: Build and release plugins
 
 on:
   release:
@@ -7,15 +10,26 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Release tag to upload artifacts to (e.g., v1.0.0). Leave empty to skip upload.'
+        description: 'Release tag to attach artifacts to (e.g. v1.0.0). Leave empty to just upload build artifacts without publishing to a release.'
         required: false
+        type: string
+      acestep_release:
+        description: 'acestep.cpp release tag to bundle (default: v0.0.3)'
+        required: false
+        default: 'v0.0.3'
         type: string
 
 permissions:
-  contents: write  # Required to upload release assets
+  contents: write
+
+# Default acestep.cpp release to bundle (overrideable via workflow_dispatch input)
+env:
+  ACESTEP_RELEASE: ${{ inputs.acestep_release || 'v0.0.3' }}
 
 jobs:
+  # ── macOS — AU + VST3 ────────────────────────────────────────────────────────
   build-macos:
+    name: Release · macOS (AU + VST3)
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -49,11 +63,11 @@ jobs:
           set -e
           AU=$(find build -name "acestep-vst.component" -type d 2>/dev/null | head -1)
           VST3=$(find build -name "acestep-vst.vst3" -type d 2>/dev/null | head -1)
-          [ -n "$AU" ] || AU=$(find build -name "*.component" -type d 2>/dev/null | head -1)
+          [ -n "$AU" ]   || AU=$(find build -name "*.component" -type d 2>/dev/null | head -1)
           [ -n "$VST3" ] || VST3=$(find build -name "*.vst3" -type d 2>/dev/null | head -1)
-          echo "au_path=$AU" >> $GITHUB_OUTPUT
+          echo "au_path=$AU"     >> $GITHUB_OUTPUT
           echo "vst3_path=$VST3" >> $GITHUB_OUTPUT
-          echo "Found AU: $AU"
+          echo "Found AU:   $AU"
           echo "Found VST3: $VST3"
           if [ -z "$AU" ] || [ -z "$VST3" ]; then
             echo "Plugin artefacts not found. Build tree:"
@@ -61,50 +75,70 @@ jobs:
             exit 1
           fi
 
-      - name: Create zip archives for release
+      - name: Stage plugin bundles
         run: |
           mkdir -p release-artefacts
-          cp -R "${{ steps.artefacts.outputs.au_path }}" "release-artefacts/acestep-vst.component"
-          cp -R "${{ steps.artefacts.outputs.vst3_path }}" "release-artefacts/acestep-vst.vst3"
-          echo "zip_path=release-artefacts/AcestepVST-macOS-AU-VST3.zip" >> $GITHUB_ENV
+          cp -R "${{ steps.artefacts.outputs.au_path }}"   release-artefacts/acestep-vst.component
+          cp -R "${{ steps.artefacts.outputs.vst3_path }}" release-artefacts/acestep-vst.vst3
 
-      # Sign AU/VST3 (for zip and for pkg). Without secret: ad-hoc. With MACOS_SIGNING_IDENTITY (Developer ID Application): proper sign.
+      - name: Download and embed acestep.cpp binaries (macOS)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p /tmp/acestep-bins
+          gh release download "$ACESTEP_RELEASE" \
+            --repo audiohacking/acestep.cpp \
+            --pattern "acestep-macos-arm64-metal.tar.gz" \
+            --dir /tmp/acestep-bins
+          tar -C /tmp/acestep-bins -xzf /tmp/acestep-bins/acestep-macos-arm64-metal.tar.gz
+
+          echo "Bundling binaries from: $(ls /tmp/acestep-bins/ace-* 2>/dev/null || echo 'none found')"
+
+          # Embed ace-lm + ace-synth + dylibs into BOTH .component and .vst3
+          for BUNDLE_BIN in \
+            "release-artefacts/acestep-vst.component/Contents/MacOS" \
+            "release-artefacts/acestep-vst.vst3/Contents/MacOS"; do
+            cp /tmp/acestep-bins/ace-lm /tmp/acestep-bins/ace-synth "$BUNDLE_BIN/"
+            find /tmp/acestep-bins -maxdepth 1 -name "*.dylib" -exec cp {} "$BUNDLE_BIN/" \;
+            chmod +x "$BUNDLE_BIN/ace-lm" "$BUNDLE_BIN/ace-synth"
+            echo "Embedded into $BUNDLE_BIN: $(ls $BUNDLE_BIN)"
+          done
+
       - name: Codesign plugin bundles
         env:
           MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
         run: |
           IDENTITY="${MACOS_SIGNING_IDENTITY:--}"
-          echo "Signing plugins with identity: $IDENTITY"
-          if [ "$IDENTITY" = "-" ]; then
-            xcrun codesign --force --sign - --deep "release-artefacts/acestep-vst.component"
-            xcrun codesign --force --sign - --deep "release-artefacts/acestep-vst.vst3"
-          else
-            xcrun codesign --force --sign "$IDENTITY" --options runtime --timestamp --deep \
-              "release-artefacts/acestep-vst.component"
-            xcrun codesign --force --sign "$IDENTITY" --options runtime --timestamp --deep \
-              "release-artefacts/acestep-vst.vst3"
-          fi
-          cd release-artefacts && zip -r "AcestepVST-macOS-AU-VST3.zip" "acestep-vst.component" "acestep-vst.vst3" && cd ..
-          echo "Plugin bundles signed; zip created."
-
-      - name: Prepare pkg payload
-        run: |
-          mkdir -p payload/Library/Audio/Plug-Ins/Components
-          mkdir -p payload/Library/Audio/Plug-Ins/VST3
-          cp -R "release-artefacts/acestep-vst.component" "payload/Library/Audio/Plug-Ins/Components/"
-          cp -R "release-artefacts/acestep-vst.vst3" "payload/Library/Audio/Plug-Ins/VST3/"
+          echo "Signing with identity: $IDENTITY"
+          for BUNDLE in \
+            release-artefacts/acestep-vst.component \
+            release-artefacts/acestep-vst.vst3; do
+            if [ "$IDENTITY" = "-" ]; then
+              xcrun codesign --force --sign - --deep "$BUNDLE"
+            else
+              xcrun codesign --force --sign "$IDENTITY" \
+                --options runtime --timestamp --deep "$BUNDLE"
+            fi
+          done
+          cd release-artefacts
+          zip -r "AcestepVST-macOS-AU-VST3.zip" "acestep-vst.component" "acestep-vst.vst3"
+          cd ..
 
       - name: Build macOS installer (.pkg)
         run: |
+          mkdir -p payload/Library/Audio/Plug-Ins/Components
+          mkdir -p payload/Library/Audio/Plug-Ins/VST3
+          cp -R release-artefacts/acestep-vst.component \
+                payload/Library/Audio/Plug-Ins/Components/
+          cp -R release-artefacts/acestep-vst.vst3 \
+                payload/Library/Audio/Plug-Ins/VST3/
           pkgbuild \
             --root payload \
             --identifier com.audiohacking.acestep-vst \
             --version 0.1.0 \
             --install-location / \
             release-artefacts/AcestepVST-macOS-Installer.pkg
-          echo "Installer places AU and VST3 in /Library/Audio/Plug-Ins/Components and /Library/Audio/Plug-Ins/VST3"
 
-      # Sign the .pkg so macOS doesn't show "unidentified developer". Use Developer ID Installer cert.
       - name: Codesign installer (.pkg)
         env:
           MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
@@ -113,31 +147,193 @@ jobs:
           IDENTITY="${MACOS_INSTALLER_SIGNING_IDENTITY:-$MACOS_SIGNING_IDENTITY}"
           IDENTITY="${IDENTITY:--}"
           if [ "$IDENTITY" != "-" ] && [ -n "$IDENTITY" ]; then
-            echo "Signing installer pkg with identity: $IDENTITY"
-            mv release-artefacts/AcestepVST-macOS-Installer.pkg release-artefacts/AcestepVST-macOS-Installer-unsigned.pkg
+            mv release-artefacts/AcestepVST-macOS-Installer.pkg \
+               release-artefacts/AcestepVST-macOS-Installer-unsigned.pkg
             productsign --sign "$IDENTITY" --timestamp \
               release-artefacts/AcestepVST-macOS-Installer-unsigned.pkg \
               release-artefacts/AcestepVST-macOS-Installer.pkg
             rm release-artefacts/AcestepVST-macOS-Installer-unsigned.pkg
-            echo "Installer pkg signed."
-          else
-            echo "No signing identity secret; installer pkg is unsigned (plugins are ad-hoc signed)."
           fi
 
       - name: Upload release assets
         if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ (github.event_name == 'release' && github.event.release.tag_name) || inputs.release_tag }}
+          tag_name: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag }}
           files: |
             release-artefacts/AcestepVST-macOS-AU-VST3.zip
             release-artefacts/AcestepVST-macOS-Installer.pkg
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload artefacts (push / workflow_dispatch or no release)
-        if: github.event_name != 'release' || github.event.release == null
+      - name: Upload build artifacts (dry-run / no release)
+        if: github.event_name != 'release' && !(github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
         uses: actions/upload-artifact@v4
         with:
           name: AcestepVST-macOS-plugins
+          path: release-artefacts/
+
+  # ── Linux — VST3 ─────────────────────────────────────────────────────────────
+  build-linux:
+    name: Release · Linux (VST3)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install JUCE system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev \
+            libfreetype6-dev libfontconfig1-dev \
+            libasound2-dev libgl1-mesa-dev \
+            ninja-build
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: |
+          cmake --build build --config Release
+
+      - name: Locate VST3 artefact
+        id: artefacts
+        run: |
+          set -e
+          VST3=$(find build -name "acestep-vst.vst3" -type d 2>/dev/null | head -1)
+          [ -n "$VST3" ] || VST3=$(find build -name "*.vst3" -type d 2>/dev/null | head -1)
+          echo "vst3_path=$VST3" >> $GITHUB_OUTPUT
+          echo "Found VST3: $VST3"
+          [ -n "$VST3" ] || (echo "VST3 not found" && exit 1)
+
+      - name: Stage plugin bundle
+        run: |
+          mkdir -p release-artefacts
+          cp -R "${{ steps.artefacts.outputs.vst3_path }}" release-artefacts/acestep-vst.vst3
+
+      - name: Download and embed acestep.cpp binaries (Linux)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p /tmp/acestep-bins
+          gh release download "$ACESTEP_RELEASE" \
+            --repo audiohacking/acestep.cpp \
+            --pattern "acestep-linux-x64.tar.gz" \
+            --dir /tmp/acestep-bins
+          tar -C /tmp/acestep-bins -xzf /tmp/acestep-bins/acestep-linux-x64.tar.gz
+
+          echo "Bundling binaries from: $(ls /tmp/acestep-bins/ace-* 2>/dev/null || echo 'none found')"
+
+          BUNDLE_BIN="release-artefacts/acestep-vst.vst3/Contents/x86_64-linux"
+          cp /tmp/acestep-bins/ace-lm /tmp/acestep-bins/ace-synth "$BUNDLE_BIN/"
+          find /tmp/acestep-bins -maxdepth 1 -name "*.so" -exec cp {} "$BUNDLE_BIN/" \;
+          chmod +x "$BUNDLE_BIN/ace-lm" "$BUNDLE_BIN/ace-synth"
+          echo "Embedded into $BUNDLE_BIN: $(ls $BUNDLE_BIN)"
+
+      - name: Create release archive
+        run: |
+          cd release-artefacts
+          tar czf AcestepVST-Linux-VST3.tar.gz acestep-vst.vst3
+          cd ..
+
+      - name: Upload release assets
+        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag }}
+          files: release-artefacts/AcestepVST-Linux-VST3.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload build artifacts (dry-run / no release)
+        if: github.event_name != 'release' && !(github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+        uses: actions/upload-artifact@v4
+        with:
+          name: AcestepVST-Linux-VST3
+          path: release-artefacts/
+
+  # ── Windows — VST3 ───────────────────────────────────────────────────────────
+  build-windows:
+    name: Release · Windows (VST3)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build
+        run: |
+          cmake --build build --config Release
+
+      - name: Locate VST3 artefact
+        id: artefacts
+        shell: bash
+        run: |
+          set -e
+          VST3=$(find build -name "acestep-vst.vst3" -type d 2>/dev/null | head -1)
+          [ -n "$VST3" ] || VST3=$(find build -name "*.vst3" -type d 2>/dev/null | head -1)
+          echo "vst3_path=$VST3" >> $GITHUB_OUTPUT
+          echo "Found VST3: $VST3"
+          [ -n "$VST3" ] || (echo "VST3 not found" && exit 1)
+
+      - name: Stage plugin bundle
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path release-artefacts -Force | Out-Null
+          Copy-Item -Recurse "${{ steps.artefacts.outputs.vst3_path }}" `
+                    release-artefacts\acestep-vst.vst3
+
+      - name: Download and embed acestep.cpp binaries (Windows)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path "$env:TEMP\acestep-bins" -Force | Out-Null
+          gh release download "$env:ACESTEP_RELEASE" `
+            --repo audiohacking/acestep.cpp `
+            --pattern "acestep-windows-x64.zip" `
+            --dir "$env:TEMP\acestep-bins"
+          Expand-Archive -Path "$env:TEMP\acestep-bins\acestep-windows-x64.zip" `
+                         -DestinationPath "$env:TEMP\acestep-bins\extracted" -Force
+
+          $BinSrc  = "$env:TEMP\acestep-bins\extracted"
+          $BinDest = "release-artefacts\acestep-vst.vst3\Contents\x86_64-win"
+
+          Write-Host "Bundling: $(Get-ChildItem $BinSrc -Filter 'ace-*.exe' | Select-Object -ExpandProperty Name)"
+          Copy-Item "$BinSrc\ace-lm.exe", "$BinSrc\ace-synth.exe" $BinDest
+          # Copy runtime DLLs needed by the inference engine
+          Get-ChildItem "$BinSrc\*.dll" | Copy-Item -Destination $BinDest -ErrorAction SilentlyContinue
+          Write-Host "Embedded into $BinDest`: $(Get-ChildItem $BinDest | Select-Object -ExpandProperty Name)"
+
+      - name: Create release archive
+        shell: pwsh
+        run: |
+          Compress-Archive -Path release-artefacts\acestep-vst.vst3 `
+                           -DestinationPath release-artefacts\AcestepVST-Windows-VST3.zip
+
+      - name: Upload release assets
+        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag }}
+          files: release-artefacts/AcestepVST-Windows-VST3.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload build artifacts (dry-run / no release)
+        if: github.event_name != 'release' && !(github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+        uses: actions/upload-artifact@v4
+        with:
+          name: AcestepVST-Windows-VST3
           path: release-artefacts/

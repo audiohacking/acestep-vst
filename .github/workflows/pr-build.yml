@@ -1,5 +1,5 @@
-# Verify the macOS build compiles cleanly on every pull request and push to main.
-name: Build check (macOS)
+# Verify the plugin compiles cleanly on every pull request and push to main.
+name: Build check (macOS · Linux · Windows)
 
 on:
   pull_request:
@@ -8,8 +8,13 @@ on:
       - main
       - master
 
+permissions:
+  contents: read
+
 jobs:
+  # ── macOS — AU + VST3 ────────────────────────────────────────────────────────
   build-macos:
+    name: Build · macOS (AU + VST3)
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -36,3 +41,50 @@ jobs:
       - name: Build
         run: |
           cmake --build build --config Release -- -quiet
+
+  # ── Linux — VST3 ─────────────────────────────────────────────────────────────
+  build-linux:
+    name: Build · Linux (VST3)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install JUCE system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+            libxinerama-dev libxrandr-dev libxrender-dev \
+            libfreetype6-dev libfontconfig1-dev \
+            libasound2-dev libgl1-mesa-dev \
+            ninja-build
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: |
+          cmake --build build --config Release
+
+  # ── Windows — VST3 ───────────────────────────────────────────────────────────
+  build-windows:
+    name: Build · Windows (VST3)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build
+        run: |
+          cmake --build build --config Release
