@@ -2,60 +2,91 @@
 
 # acestep-vst
 
-Standalone **AU** and **VST3** plugin for local AI music generation in your DAW — no servers, no cloud, no APIs. 
+Standalone **AU** (macOS) and **VST3** (macOS · Linux · Windows) plugin for local AI music
+generation in your DAW — no servers, no cloud, no APIs.
 
-> Powered by [acestep.cpp](https://github.com/ServeurpersoCom/acestep.cpp).
+> Powered by [acestep.cpp](https://github.com/audiohacking/acestep.cpp).
 
 ## Features
 
 - **Text-to-Music** — type a prompt, pick duration and quality, click Generate.
-- **Cover / Repaint mode** — use any WAV/MP3 as a reference; the underlying model transforms it according to your prompt.
+- **Cover / Repaint mode** — use any WAV/MP3 as a reference; the model transforms it according to your prompt.
 - **BPM auto-detect** — reads BPM from the DAW playhead automatically.
-- **Generation queue / library** — browse, play, loop, delete, and drag previous generations directly into your DAW timeline.
-- **Import & drag-drop** — import external WAV/MP3 files into the library, or drag them from Finder onto the plugin window to use as a cover reference.
-- **Loop playback** — preview any library entry on loop inside the plugin output.
-- **Settings** — configure binary directory, models directory, and output directory; all persisted in the DAW project.
+- **AudioTransportSource preview** — generated audio plays back immediately with proper JUCE transport; loop and stop from the Library tab.
+- **Generation library** — browse, play, loop, delete, and drag previous generations directly into your DAW timeline.
+- **Import & drag-drop** — import external WAV/MP3 files or drag them onto the plugin window.
+- **Drag to DAW** — drag any library entry straight onto the DAW timeline (OS-level file drag).
+- **Settings** — configure binary directory, models directory, and output directory; persisted in the DAW project.
 
 <img width="844" height="520" alt="image" src="https://github.com/user-attachments/assets/335c76bb-a519-48fd-b8f6-9da3f38e093e" />
 
-
 ## Quick start
 
-1. Clone with submodules:
-   ```bash
-   git clone --recurse-submodules https://github.com/audiohacking/acestep-vst.git
-   ```
+### 1. Install the plugin
 
-2. Build the JUCE plugin:
-   ```bash
-   cmake -B build -G "Unix Makefiles" -DCMAKE_OSX_ARCHITECTURES=arm64
-   cmake --build build --config Release
-   ```
+Download the latest release for your platform from the
+[Releases page](https://github.com/audiohacking/acestep-vst/releases):
 
-3. Build the acestep.cpp inference engine:
-   ```bash
-   cmake -B vendor/acestep.cpp/build vendor/acestep.cpp
-   cmake --build vendor/acestep.cpp/build --config Release -j$(sysctl -n hw.logicalcpu)
-   ```
+| Platform | File | Formats |
+|----------|------|---------|
+| macOS (Apple Silicon) | `AcestepVST-macOS-Installer.pkg` or `…AU-VST3.zip` | AU + VST3 |
+| Linux x86-64 | `AcestepVST-Linux-VST3.tar.gz` | VST3 |
+| Windows x86-64 | `AcestepVST-Windows-VST3.zip` | VST3 |
 
-4. Download models (~7.7 GB):
-   ```bash
-   cd vendor/acestep.cpp && pip install hf && ./models.sh
-   ```
+Each bundle already contains the `ace-lm` and `ace-synth` inference engines — no
+separate binary installation required.
 
-5. Place binaries and models where the plugin finds them — see `ml-bridge/README.md`.
+### 2. Download models (~7.7 GB)
 
-6. Copy built `.component` and `.vst3` into your plug-in folders, rescan in DAW.
+```bash
+cd vendor/acestep.cpp && ./models.sh
+```
 
-Full build instructions and CI details: **ml-bridge/README.md** and **ml-bridge/BUILD_AND_CI.md**.
+Or download manually from Hugging Face and place the `.gguf` files in a folder of
+your choice.
+
+### 3. Configure paths in the plugin
+
+Open the plugin in your DAW, go to the **Settings** tab and set:
+
+- **Binaries directory** — leave empty if using the bundled release (auto-detected).
+- **Models directory** — folder containing the four `.gguf` model files.
+- **Output directory** — where generated audio is saved (default: platform app-data folder).
+
+### 4. Generate
+
+Switch to the **Generate** tab, type a prompt, and click **Generate**.
+
+---
+
+## Building from source
+
+See **ml-bridge/BUILD_AND_CI.md** for full build instructions (macOS · Linux · Windows).
+
+```bash
+# Clone with submodules
+git clone --recurse-submodules https://github.com/audiohacking/acestep-vst.git
+
+# macOS
+cmake -B build -G Xcode -DCMAKE_OSX_ARCHITECTURES=arm64
+cmake --build build --config Release
+
+# Linux (install JUCE deps first — see BUILD_AND_CI.md)
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+
+# Windows
+cmake -B build -G "Visual Studio 17 2022" -A x64
+cmake --build build --config Release
+```
 
 ## Repo layout
 
 | Path | Description |
 |------|-------------|
-| **ml-bridge/plugin/** | JUCE AU + VST3 plugin source (Processor + Editor) |
+| **ml-bridge/plugin/** | JUCE AU + VST3 plugin source |
 | **ml-bridge/BUILD_AND_CI.md** | Build steps and CI/release workflow |
-| **vendor/acestep.cpp/** | [acestep.cpp](https://github.com/ServeurpersoCom/acestep.cpp) submodule |
+| **vendor/acestep.cpp/** | [acestep.cpp](https://github.com/audiohacking/acestep.cpp) submodule |
 | **ROADMAP.md** | Feature roadmap |
 
 ## License

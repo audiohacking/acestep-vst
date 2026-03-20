@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.22)
 project(AcestepVST VERSION 0.1.0)
 
-# Enable languages needed by the project (on macOS)
+# Objective-C++ is only needed on macOS (AU format)
 if(APPLE)
   enable_language(OBJCXX)
 endif()
@@ -10,15 +10,14 @@ endif()
 add_subdirectory(ml-bridge/plugin)
 
 # ── acestep.cpp ───────────────────────────────────────────────────────────────
-# acestep.cpp lives in vendor/acestep.cpp as a git submodule.
-# It is built separately from the JUCE plugin (its own cmake + binary outputs).
-# Run `git submodule update --init` after cloning to populate the submodule.
+# Pre-built binaries are available at:
+#   https://github.com/audiohacking/acestep.cpp/releases
 #
-# macOS / Apple Silicon (Metal, default):
-#   cmake -B vendor/acestep.cpp/build vendor/acestep.cpp
-#   cmake --build vendor/acestep.cpp/build --config Release -j$(sysctl -n hw.logicalcpu)
-#
-# Linux + CUDA:
-#   cmake -B vendor/acestep.cpp/build vendor/acestep.cpp -DGGML_CUDA=ON
-#   cmake --build vendor/acestep.cpp/build --config Release -j$(nproc)
+# To build from source (optional):
+#   macOS:  cmake -B vendor/acestep.cpp/build vendor/acestep.cpp
+#           cmake --build vendor/acestep.cpp/build --config Release -j$(sysctl -n hw.logicalcpu)
+#   Linux:  cmake -B vendor/acestep.cpp/build vendor/acestep.cpp
+#           cmake --build vendor/acestep.cpp/build --config Release -j$(nproc)
+#   Windows: cmake -S vendor/acestep.cpp -B vendor/acestep.cpp/build
+#            cmake --build vendor/acestep.cpp/build --config Release
 # ─────────────────────────────────────────────────────────────────────────────

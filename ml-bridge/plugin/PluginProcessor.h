@@ -127,7 +127,6 @@ private:
     // the preview engine and start playback.
     mutable juce::CriticalSection pendingLibraryFileLock_;
     juce::File   pendingLibraryFile_;
-    juce::String pendingPrompt_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AcestepAudioProcessor)
 };

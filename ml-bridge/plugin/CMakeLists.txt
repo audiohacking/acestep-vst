@@ -1,10 +1,5 @@
-# acestep-vst — AU + VST3 (macOS target)
+# acestep-vst — AU + VST3 (macOS) / VST3 (Linux, Windows)
 cmake_minimum_required(VERSION 3.22)
-
-if(NOT APPLE)
-  message(STATUS "acestep-vst: skipping (macOS only for now)")
-  return()
-endif()
 
 # Fetch JUCE
 include(FetchContent)
@@ -16,6 +11,13 @@ FetchContent_Declare(JUCE
 set(JUCE_ENABLE_GPL_MODE ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(JUCE)
 
+# AU is macOS-only; all other platforms get VST3 only
+if(APPLE)
+  set(PLUGIN_FORMATS AU VST3)
+else()
+  set(PLUGIN_FORMATS VST3)
+endif()
+
 juce_add_plugin(AcestepVST
   VERSION 0.1.0
   COMPANY_NAME "AudioHacking"
@@ -26,7 +28,7 @@ juce_add_plugin(AcestepVST
   EDITOR_WANTS_KEYBOARD_FOCUS FALSE
   PLUGIN_MANUFACTURER_CODE AuHk
   PLUGIN_CODE AcSt
-  FORMATS AU VST3
+  FORMATS ${PLUGIN_FORMATS}
   PRODUCT_NAME "acestep-vst"
   COPY_PLUGIN_AFTER_BUILD FALSE
 )

@@ -358,7 +358,7 @@ AcestepAudioProcessorEditor::AcestepAudioProcessorEditor(AcestepAudioProcessor& 
     modelsPathLabel_.setText("Models directory (*.gguf files):", juce::dontSendNotification);
     addChildComponent(modelsPathLabel_);
     modelsPathEditor_.setTextToShowWhenEmpty(
-        "Default: ~/Library/Application Support/AcestepVST/models",
+        "Default: " + processorRef.getModelsDirectory().getFullPathName(),
         AcestepColours::textDim);
     modelsBrowseButton_.onClick = [this]
     {
@@ -373,7 +373,7 @@ AcestepAudioProcessorEditor::AcestepAudioProcessorEditor(AcestepAudioProcessor& 
     outputPathLabel_.setText("Output / Generations directory:", juce::dontSendNotification);
     addChildComponent(outputPathLabel_);
     outputPathEditor_.setTextToShowWhenEmpty(
-        "Default: ~/Library/Application Support/AcestepVST/Generations",
+        "Default: " + processorRef.getLibraryDirectory().getFullPathName(),
         AcestepColours::textDim);
     outputBrowseButton_.onClick = [this]
     {
@@ -395,9 +395,8 @@ AcestepAudioProcessorEditor::AcestepAudioProcessorEditor(AcestepAudioProcessor& 
     settingsInfoLabel_.setJustificationType(juce::Justification::topLeft);
     settingsInfoLabel_.setText(
         "Leave fields empty to use the defaults shown as hints.\n"
-        "Build binaries: cmake -B vendor/acestep.cpp/build vendor/acestep.cpp\n"
-        "              && cmake --build vendor/acestep.cpp/build --config Release\n"
-        "Download models: cd vendor/acestep.cpp && ./models.sh",
+        "Pre-built binaries: github.com/audiohacking/acestep.cpp/releases\n"
+        "Download models (~7.7 GB): cd vendor/acestep.cpp && ./models.sh",
         juce::dontSendNotification);
     addChildComponent(settingsInfoLabel_);
 
@@ -672,7 +671,7 @@ void AcestepAudioProcessorEditor::onInsertDawClicked()
     // clipboard as a convenience fallback.
     file.revealToUser();
     juce::SystemClipboard::copyTextToClipboard(file.getFullPathName());
-    showFeedback("Revealed in Finder \xe2\x80\x94 drag into your DAW timeline. Path also copied.");
+    showFeedback("Revealed in file manager \xe2\x80\x94 drag into your DAW timeline. Path also copied.");
 }
 
 void AcestepAudioProcessorEditor::onRevealClicked()

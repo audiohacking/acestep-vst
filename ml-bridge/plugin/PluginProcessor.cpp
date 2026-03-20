@@ -16,8 +16,8 @@ void writeToLogFile(const juce::String& message)
 #if JUCE_DEBUG
     std::cerr << "[AcestepVST] " << message.toRawUTF8() << std::endl;
 #endif
-    juce::File logDir = juce::File::getSpecialLocation(juce::File::userHomeDirectory)
-                            .getChildFile("Library").getChildFile("Logs");
+    juce::File logDir = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+                            .getChildFile("AcestepVST");
     if (logDir.exists() || logDir.createDirectory())
     {
         juce::File logFile = logDir.getChildFile("AcestepVST.log");
@@ -50,6 +50,15 @@ const char* stateToString(AcestepAudioProcessor::State s)
 // ── Subprocess timeouts ───────────────────────────────────────────────────────
 static constexpr int kLmTimeoutMs  = 300'000;  // ace-lm:    5 min
 static constexpr int kDitTimeoutMs = 600'000;  // ace-synth: 10 min
+
+// ── Platform-specific binary names ────────────────────────────────────────────
+#if JUCE_WINDOWS
+static const juce::String kAceLmName    = "ace-lm.exe";
+static const juce::String kAceSynthName = "ace-synth.exe";
+#else
+static const juce::String kAceLmName    = "ace-lm";
+static const juce::String kAceSynthName = "ace-synth";
+#endif
 
 // ── Supported audio extensions (in priority order) ────────────────────────────
 static const juce::StringArray kAudioExts{ "wav", "mp3" };
@@ -156,8 +165,8 @@ bool AcestepAudioProcessor::areBinariesReady() const
     juce::File binDir = bp.isEmpty()
         ? juce::File::getSpecialLocation(juce::File::currentApplicationFile).getParentDirectory()
         : juce::File(bp);
-    return binDir.getChildFile("ace-lm").existsAsFile()
-        && binDir.getChildFile("ace-synth").existsAsFile();
+    return binDir.getChildFile(kAceLmName).existsAsFile()
+        && binDir.getChildFile(kAceSynthName).existsAsFile();
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -243,8 +252,8 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
         ? juce::File::getSpecialLocation(juce::File::currentApplicationFile).getParentDirectory()
         : juce::File(bp);
 
-    juce::File aceLm    = binDir.getChildFile("ace-lm");
-    juce::File aceSynth = binDir.getChildFile("ace-synth");
+    juce::File aceLm    = binDir.getChildFile(kAceLmName);
+    juce::File aceSynth = binDir.getChildFile(kAceSynthName);
 
     if (!aceLm.existsAsFile() || !aceSynth.existsAsFile())
     {
@@ -489,16 +498,14 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
         return;
     }
 
-    // Write sidecar prompt file
-    if (prompt.isNotEmpty())
-        destFile.withFileExtension("txt").replaceWithText(prompt);
+    // Register in library: write sidecar prompt file alongside the audio file
+    addToLibrary(destFile, prompt);
 
     logTrace("library file: " + destFile.getFullPathName());
 
     {
         juce::ScopedLock l(pendingLibraryFileLock_);
         pendingLibraryFile_ = destFile;
-        pendingPrompt_      = prompt;
     }
     triggerAsyncUpdate();
     tmpDir.deleteRecursively();
@@ -551,7 +558,6 @@ void AcestepAudioProcessor::handleAsyncUpdate()
         if (!pendingLibraryFile_.existsAsFile()) return;
         libFile             = pendingLibraryFile_;
         pendingLibraryFile_ = juce::File();
-        pendingPrompt_.clear();
     }
 
     if (!preview_.loadFile(libFile))
