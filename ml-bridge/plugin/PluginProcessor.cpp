@@ -1,11 +1,8 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
-#include <algorithm>
-#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <iostream>
-#include <vector>
 #include <thread>
 
 namespace
@@ -51,10 +48,9 @@ const char* stateToString(AcestepAudioProcessor::State s)
 }
 
 // ── Subprocess timeouts ───────────────────────────────────────────────────────
-static constexpr int kLmTimeoutMs      = 300'000;  // ace-lm:    5 min
-static constexpr int kDitTimeoutMs     = 600'000;  // ace-synth: 10 min
-// ── Stereo channel count used throughout the playback pipeline ────────────────
-static constexpr int kNumOutputChannels = 2;
+static constexpr int kLmTimeoutMs  = 300'000;  // ace-lm:    5 min
+static constexpr int kDitTimeoutMs = 600'000;  // ace-synth: 10 min
+
 // ── Supported audio extensions (in priority order) ────────────────────────────
 static const juce::StringArray kAudioExts{ "wav", "mp3" };
 
@@ -85,7 +81,6 @@ AcestepAudioProcessor::AcestepAudioProcessor()
 #endif
       )
 {
-    playbackBuffer_.resize(static_cast<size_t>(kPlaybackFifoFrames) * kNumOutputChannels, 0.0f);
     {
         juce::ScopedLock l(statusLock_);
         statusText_ = "Idle \xe2\x80\x94 enter a prompt and click Generate.";
@@ -171,10 +166,13 @@ bool AcestepAudioProcessor::areBinariesReady() const
 
 void AcestepAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
-    juce::ignoreUnused(samplesPerBlock);
-    sampleRate_.store(sampleRate);
+    preview_.prepareToPlay(sampleRate, samplesPerBlock);
 }
-void AcestepAudioProcessor::releaseResources() {}
+
+void AcestepAudioProcessor::releaseResources()
+{
+    preview_.releaseResources();
+}
 
 // ═════════════════════════════════════════════════════════════════════════════
 // processBlock — audio thread
@@ -192,96 +190,10 @@ void AcestepAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
             if (auto bpm = pos->getBpm())
                 hostBpm_.store(*bpm, std::memory_order_relaxed);
 
-    const int numSamples = buffer.getNumSamples();
-    const int numCh      = buffer.getNumChannels();
-    if (numCh < 2) { buffer.clear(); return; }
+    if (buffer.getNumChannels() == 0) return;
 
-    // ── Handle stop request ──────────────────────────────────────────────────
-    if (stopRequested_.exchange(false, std::memory_order_acq_rel))
-    {
-        playbackFifo_.reset();
-        loopReadPos_.store(0, std::memory_order_relaxed);
-        buffer.clear();
-        return;
-    }
-
-    // ── Accept new audio handed off by the message thread ────────────────────
-    if (pendingPlaybackReady_.exchange(false, std::memory_order_acq_rel))
-    {
-        const int N      = pendingPlaybackFrames_.load(std::memory_order_acquire);
-        const int bufIdx = pendingPlaybackBufIdx_.load(std::memory_order_acquire);
-        const std::vector<float>& srcBuf = pendingPlaybackBuf_[bufIdx];
-        if (N > 0 && N <= kPlaybackFifoFrames
-            && srcBuf.size() >= static_cast<size_t>(N) * kNumOutputChannels)
-        {
-            playbackFifo_.reset();
-            int s1, b1, s2, b2;
-            playbackFifo_.prepareToWrite(N, s1, b1, s2, b2);
-            const float* src = srcBuf.data();
-            auto copyBlock = [&](int fStart, int count, int srcOff)
-            {
-                for (int i = 0; i < count; ++i)
-                {
-                    const size_t fi = static_cast<size_t>(fStart + i);
-                    const int    si = (srcOff + i) * 2;
-                    if (fi * 2 + 1 < playbackBuffer_.size())
-                    {
-                        playbackBuffer_[fi * 2]     = src[si];
-                        playbackBuffer_[fi * 2 + 1] = src[si + 1];
-                    }
-                }
-            };
-            copyBlock(s1, b1, 0);
-            copyBlock(s2, b2, b1);
-            playbackFifo_.finishedWrite(b1 + b2);
-        }
-    }
-
-    // ── Loop playback (reads directly from loopBuf_, wraps around) ───────────
-    if (loopPlayback_.load(std::memory_order_relaxed))
-    {
-        const int active = loopBufActive_.load(std::memory_order_acquire);
-        const int total  = loopFrames_[active];
-        if (total > 0 && static_cast<int>(loopBuf_[active].size()) >= total * kNumOutputChannels)
-        {
-            int rp = loopReadPos_.load(std::memory_order_relaxed);
-            const float* lb = loopBuf_[active].data();
-            for (int i = 0; i < numSamples; ++i)
-            {
-                if (rp >= total) rp = 0;
-                buffer.setSample(0, i, lb[static_cast<size_t>(rp) * 2]);
-                buffer.setSample(1, i, lb[static_cast<size_t>(rp) * 2 + 1]);
-                ++rp;
-            }
-            loopReadPos_.store(rp, std::memory_order_relaxed);
-            return;
-        }
-    }
-
-    // ── One-shot FIFO playback ────────────────────────────────────────────────
-    int s1, b1, s2, b2;
-    playbackFifo_.prepareToRead(numSamples, s1, b1, s2, b2);
-    auto readFrames = [&](int fStart, int count, int bufOff)
-    {
-        for (int i = 0; i < count; ++i)
-        {
-            const size_t base = static_cast<size_t>(fStart + i) * 2u;
-            if (base + 1 < playbackBuffer_.size() && bufOff + i < numSamples)
-            {
-                buffer.setSample(0, bufOff + i, playbackBuffer_[base]);
-                buffer.setSample(1, bufOff + i, playbackBuffer_[base + 1]);
-            }
-        }
-    };
-    readFrames(s1, b1, 0);
-    readFrames(s2, b2, b1);
-    playbackFifo_.finishedRead(b1 + b2);
-
-    for (int i = b1 + b2; i < numSamples; ++i)
-    {
-        buffer.setSample(0, i, 0.0f);
-        buffer.setSample(1, i, 0.0f);
-    }
+    buffer.clear();
+    preview_.render(buffer);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -331,8 +243,8 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
         ? juce::File::getSpecialLocation(juce::File::currentApplicationFile).getParentDirectory()
         : juce::File(bp);
 
-    juce::File aceLm     = binDir.getChildFile("ace-lm");
-    juce::File aceSynth  = binDir.getChildFile("ace-synth");
+    juce::File aceLm    = binDir.getChildFile("ace-lm");
+    juce::File aceSynth = binDir.getChildFile("ace-synth");
 
     if (!aceLm.existsAsFile() || !aceSynth.existsAsFile())
     {
@@ -434,7 +346,7 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
     juce::StringArray lmArgs;
     lmArgs.add(aceLm.getFullPathName());
     lmArgs.add("--request"); lmArgs.add(requestFile.getFullPathName());
-    lmArgs.add("--model");   lmArgs.add(lmModel.getFullPathName());
+    lmArgs.add("--lm");      lmArgs.add(lmModel.getFullPathName());
 
     juce::ChildProcess lmProc;
     if (!lmProc.start(lmArgs, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
@@ -486,10 +398,10 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
 
     juce::StringArray ditArgs;
     ditArgs.add(aceSynth.getFullPathName());
-    ditArgs.add("--request");      ditArgs.add(enrichedRequest.getFullPathName());
-    ditArgs.add("--text-encoder"); ditArgs.add(textEncoderModel.getFullPathName());
-    ditArgs.add("--dit");          ditArgs.add(ditModel.getFullPathName());
-    ditArgs.add("--vae");          ditArgs.add(vaeModel.getFullPathName());
+    ditArgs.add("--request");    ditArgs.add(enrichedRequest.getFullPathName());
+    ditArgs.add("--embedding");  ditArgs.add(textEncoderModel.getFullPathName());
+    ditArgs.add("--dit");        ditArgs.add(ditModel.getFullPathName());
+    ditArgs.add("--vae");        ditArgs.add(vaeModel.getFullPathName());
 
     // Pass source audio for cover / repaint mode
     if (coverFile.existsAsFile())
@@ -557,13 +469,19 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
     }
     logTrace("output audio: " + outputFile.getFullPathName());
 
-    // ── 7. Read bytes and hand off to message thread ──────────────────────────
-    juce::MemoryBlock rawBytes;
-    if (!outputFile.loadFileAsData(rawBytes) || rawBytes.getSize() == 0)
+    // ── 7. Copy output directly to the library and hand off to message thread ─
+    // We skip the decode/re-encode round-trip and copy the file as-is.  The
+    // message thread (handleAsyncUpdate) then loads it straight into the
+    // AudioTransportSource-backed preview engine and starts playback.
+    juce::File libDir  = getLibraryDirectory();
+    juce::String base  = "gen_" + juce::Time::getCurrentTime().formatted("%Y%m%d_%H%M%S");
+    juce::File destFile = libDir.getChildFile(base + "." + audioExt);
+
+    if (!outputFile.copyFileTo(destFile))
     {
         state_.store(State::Failed);
         juce::ScopedLock l(statusLock_);
-        lastError_ = "Failed to read output audio: " + outputFile.getFullPathName();
+        lastError_ = "Failed to copy generated audio to library: " + destFile.getFullPathName();
         statusText_ = lastError_;
         logError(lastError_);
         triggerAsyncUpdate();
@@ -571,12 +489,16 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
         return;
     }
 
+    // Write sidecar prompt file
+    if (prompt.isNotEmpty())
+        destFile.withFileExtension("txt").replaceWithText(prompt);
+
+    logTrace("library file: " + destFile.getFullPathName());
+
     {
-        juce::ScopedLock l(pendingWavLock_);
-        pendingWavBytes_.resize(rawBytes.getSize());
-        std::memcpy(pendingWavBytes_.data(), rawBytes.getData(), rawBytes.getSize());
-        pendingAudioExt_ = audioExt;
-        pendingPrompt_   = prompt;
+        juce::ScopedLock l(pendingLibraryFileLock_);
+        pendingLibraryFile_ = destFile;
+        pendingPrompt_      = prompt;
     }
     triggerAsyncUpdate();
     tmpDir.deleteRecursively();
@@ -588,17 +510,16 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
 
 void AcestepAudioProcessor::stopPlayback()
 {
-    stopRequested_.store(true, std::memory_order_release);
-    {
-        juce::ScopedLock l(statusLock_);
-        if (state_.load() == State::Succeeded)
-            statusText_ = "Idle \xe2\x80\x94 enter a prompt and click Generate.";
-    }
+    preview_.stop();
+    juce::ScopedLock l(statusLock_);
+    if (state_.load() == State::Succeeded)
+        statusText_ = "Idle \xe2\x80\x94 enter a prompt and click Generate.";
 }
 
 void AcestepAudioProcessor::setLoopPlayback(bool loop)
 {
     loopPlayback_.store(loop, std::memory_order_relaxed);
+    preview_.setLooping(loop);
 }
 
 void AcestepAudioProcessor::previewLibraryEntry(const juce::File& file)
@@ -607,204 +528,13 @@ void AcestepAudioProcessor::previewLibraryEntry(const juce::File& file)
     const auto st = state_.load();
     if (st == State::Submitting || st == State::Running)
         return;
-    {
-        juce::ScopedLock l(pendingPreviewLock_);
-        pendingPreviewFile_ = file;
-    }
-    triggerAsyncUpdate();
-}
 
-// ═════════════════════════════════════════════════════════════════════════════
-// Playback internals
-// ═════════════════════════════════════════════════════════════════════════════
-
-void AcestepAudioProcessor::pushSamplesToPlayback(const float* interleaved, int numFrames,
-                                                   int sourceChannels, double sourceSampleRate)
-{
-    logTrace("pushSamplesToPlayback: frames=" + juce::String(numFrames)
-           + " ch=" + juce::String(sourceChannels)
-           + " rate=" + juce::String(sourceSampleRate));
-
-    if (numFrames <= 0 || interleaved == nullptr) return;
-
-    const double hostRate = sampleRate_.load(std::memory_order_relaxed);
-    const double ratio    = sourceSampleRate > 0.0 ? hostRate / sourceSampleRate : 1.0;
-    const int outFrames   = static_cast<int>(std::round(static_cast<double>(numFrames) * ratio));
-    if (outFrames <= 0 || outFrames > kPlaybackFifoFrames)
-    {
-        logTrace("pushSamplesToPlayback: skipped (outFrames=" + juce::String(outFrames) + ")");
+    if (!preview_.loadFile(file))
         return;
-    }
 
-    const int writeIdx = nextWriteIdx_.load(std::memory_order_relaxed);
-    std::vector<float>& outBuf = pendingPlaybackBuf_[writeIdx];
-    outBuf.resize(static_cast<size_t>(outFrames) * kNumOutputChannels);
-    float* out = outBuf.data();
-
-    for (int i = 0; i < outFrames; ++i)
-    {
-        const double srcIdx = ratio > 0.0 ? static_cast<double>(i) / ratio
-                                          : static_cast<double>(i);
-        const int i0 = std::min(std::max(0, static_cast<int>(srcIdx)), numFrames - 1);
-        const int i1 = std::min(i0 + 1, numFrames - 1);
-        const float t = static_cast<float>(srcIdx - std::floor(srcIdx));
-        float l = 0.0f, r = 0.0f;
-        if (sourceChannels >= 1)
-        {
-            l = interleaved[i0 * sourceChannels] * (1.0f - t)
-              + interleaved[i1 * sourceChannels] * t;
-            r = sourceChannels >= 2
-                  ? interleaved[i0 * sourceChannels + 1] * (1.0f - t)
-                  + interleaved[i1 * sourceChannels + 1] * t
-                  : l;
-        }
-        out[i * 2]     = l;
-        out[i * 2 + 1] = r;
-    }
-
-    pendingPlaybackFrames_.store(outFrames,    std::memory_order_release);
-    pendingPlaybackBufIdx_.store(writeIdx,     std::memory_order_release);
-    pendingPlaybackReady_.store(true,          std::memory_order_release);
-    nextWriteIdx_.store(1 - writeIdx,          std::memory_order_release);
-    logTrace("pushSamplesToPlayback: done (" + juce::String(outFrames) + " frames)");
-}
-
-void AcestepAudioProcessor::setLoopData(const float* interleaved, int numFrames)
-{
-    if (numFrames <= 0 || interleaved == nullptr) return;
-    const int writeSlot = nextLoopWrite_.load(std::memory_order_relaxed);
-    loopBuf_[writeSlot].assign(interleaved, interleaved + static_cast<size_t>(numFrames) * kNumOutputChannels);
-    loopFrames_[writeSlot] = numFrames;
-    loopReadPos_.store(0, std::memory_order_relaxed);
-    loopBufActive_.store(writeSlot, std::memory_order_release);
-    nextLoopWrite_.store(1 - writeSlot, std::memory_order_relaxed);
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-// decodeAndPushAudio — message thread
-// ═════════════════════════════════════════════════════════════════════════════
-
-void AcestepAudioProcessor::decodeAndPushAudio(const std::vector<uint8_t>& bytes,
-                                                const juce::String& ext,
-                                                const juce::String& promptForLibrary)
-{
-    const bool isGenResult = promptForLibrary.isNotEmpty();
-
-    juce::AudioFormatManager fm;
-    fm.registerFormat(new juce::WavAudioFormat(), true);
-#if JUCE_USE_MP3AUDIOFORMAT
-    fm.registerFormat(new juce::MP3AudioFormat(), false);
-#endif
-    auto mis = std::make_unique<juce::MemoryInputStream>(bytes.data(), bytes.size(), false);
-    std::unique_ptr<juce::AudioFormatReader> reader(fm.createReaderFor(std::move(mis)));
-
-    if (!reader)
-    {
-        if (isGenResult)
-        {
-            state_.store(State::Failed);
-            juce::ScopedLock l(statusLock_);
-            lastError_ = "Failed to decode audio (" + ext + ")";
-            statusText_ = lastError_;
-            logError(lastError_);
-        }
-        return;
-    }
-
-    const double fileSR     = reader->sampleRate;
-    const int    numCh      = static_cast<int>(reader->numChannels);
-    const int    numSamples = static_cast<int>(reader->lengthInSamples);
-    logTrace("audio: rate=" + juce::String(fileSR) + " ch=" + juce::String(numCh)
-           + " samples=" + juce::String(numSamples));
-
-    if (numSamples <= 0 || numCh <= 0)
-    {
-        if (isGenResult)
-        {
-            state_.store(State::Failed);
-            juce::ScopedLock l(statusLock_);
-            lastError_ = "Invalid audio (no samples)";
-            statusText_ = lastError_;
-            logError(lastError_);
-        }
-        return;
-    }
-
-    juce::AudioBuffer<float> fb(numCh, numSamples);
-    if (!reader->read(&fb, 0, numSamples, 0, true, true))
-    {
-        if (isGenResult)
-        {
-            state_.store(State::Failed);
-            juce::ScopedLock l(statusLock_);
-            lastError_ = "Failed to read audio samples";
-            statusText_ = lastError_;
-            logError(lastError_);
-        }
-        return;
-    }
-
-    // Build interleaved buffer (2-ch)
-    std::vector<float> interleaved(static_cast<size_t>(numSamples) * kNumOutputChannels);
-    for (int i = 0; i < numSamples; ++i)
-    {
-        interleaved[static_cast<size_t>(i) * kNumOutputChannels]      = numCh > 0 ? fb.getSample(0, i) : 0.0f;
-        interleaved[static_cast<size_t>(i) * kNumOutputChannels + 1u] = numCh > 1
-            ? fb.getSample(1, i) : interleaved[static_cast<size_t>(i) * kNumOutputChannels];
-    }
-
-    pushSamplesToPlayback(interleaved.data(), numSamples, 2, fileSR);
-    setLoopData(interleaved.data(), numSamples);
-    playbackBufferReady_.store(true);
-
-    if (isGenResult)
-    {
-        state_.store(State::Succeeded);
-        {
-            juce::ScopedLock l(statusLock_);
-            statusText_ = "Generated \xe2\x80\x94 playing. Drag from Library into your DAW.";
-        }
-
-        // Save to library
-        try
-        {
-            juce::File libDir  = getLibraryDirectory();
-            juce::String base  = "gen_" + juce::Time::getCurrentTime().formatted("%Y%m%d_%H%M%S");
-            juce::File wavFile = libDir.getChildFile(base + ".wav");
-            auto outStream = wavFile.createOutputStream();
-            if (outStream)
-            {
-                juce::WavAudioFormat wf;
-                // createWriterFor takes ownership of the raw stream pointer;
-                // release() gives it up so the unique_ptr won't double-delete.
-                auto* rawStream = outStream.release();
-                // args: stream, sampleRate, numChannels, bitsPerSample, metadata, qualityOption
-                JUCE_BEGIN_IGNORE_WARNINGS_GCC_LIKE ("-Wdeprecated-declarations")
-                auto* writerRaw = wf.createWriterFor(rawStream, fileSR,
-                                                     static_cast<unsigned int>(numCh), 24, {}, 0);
-                JUCE_END_IGNORE_WARNINGS_GCC_LIKE
-                if (writerRaw)
-                {
-                    std::unique_ptr<juce::AudioFormatWriter> writer(writerRaw);
-                    if (writer->writeFromAudioSampleBuffer(fb, 0, numSamples))
-                        addToLibrary(wavFile, promptForLibrary);
-                    // writer destructor flushes and deletes rawStream
-                }
-                else
-                {
-                    delete rawStream; // writer failed to take ownership
-                }
-            }
-            logTrace("library save done");
-        }
-        catch (const std::exception& e) { logError("Library save failed: " + juce::String(e.what())); }
-        catch (...) { logError("Library save failed (unknown)"); }
-    }
-    else
-    {
-        juce::ScopedLock l(statusLock_);
-        statusText_ = "Previewing \xe2\x80\x94 press Stop to stop.";
-    }
+    preview_.play(loopPlayback_.load(std::memory_order_relaxed));
+    juce::ScopedLock l(statusLock_);
+    statusText_ = "Previewing \xe2\x80\x94 press Stop to stop.";
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -815,59 +545,30 @@ void AcestepAudioProcessor::handleAsyncUpdate()
 {
     logTrace("handleAsyncUpdate");
 
-    // ── Preview request takes priority ────────────────────────────────────────
-    juce::File previewFile;
+    juce::File libFile;
     {
-        juce::ScopedLock l(pendingPreviewLock_);
-        previewFile = pendingPreviewFile_;
-        pendingPreviewFile_ = juce::File();
+        juce::ScopedLock l(pendingLibraryFileLock_);
+        if (!pendingLibraryFile_.existsAsFile()) return;
+        libFile             = pendingLibraryFile_;
+        pendingLibraryFile_ = juce::File();
+        pendingPrompt_.clear();
     }
-    if (previewFile.existsAsFile())
+
+    if (!preview_.loadFile(libFile))
     {
-        juce::MemoryBlock mb;
-        if (previewFile.loadFileAsData(mb) && mb.getSize() > 0)
-        {
-            std::vector<uint8_t> bytes(mb.getSize());
-            std::memcpy(bytes.data(), mb.getData(), mb.getSize());
-            juce::String rawExt = previewFile.getFileExtension()
-                                             .trimCharactersAtStart(".")
-                                             .toLowerCase();
-            decodeAndPushAudio(bytes, rawExt, {}); // empty prompt → preview only
-        }
+        state_.store(State::Failed);
+        juce::ScopedLock l(statusLock_);
+        lastError_  = "Failed to load generated audio: " + libFile.getFullPathName();
+        statusText_ = lastError_;
+        logError(lastError_);
         return;
     }
 
-    // ── Generation result ─────────────────────────────────────────────────────
-    std::vector<uint8_t> audioBytes;
-    juce::String audioExt, promptForLib;
+    preview_.play(loopPlayback_.load(std::memory_order_relaxed));
+    state_.store(State::Succeeded);
     {
-        juce::ScopedLock l(pendingWavLock_);
-        if (pendingWavBytes_.empty()) return;
-        audioBytes   = std::move(pendingWavBytes_);
-        pendingWavBytes_.clear();
-        audioExt     = pendingAudioExt_;
-        promptForLib = pendingPrompt_;
-    }
-
-    try
-    {
-        decodeAndPushAudio(audioBytes, audioExt, promptForLib);
-    }
-    catch (const std::exception& e)
-    {
-        state_.store(State::Failed);
         juce::ScopedLock l(statusLock_);
-        lastError_  = juce::String("Decode error: ") + e.what();
-        statusText_ = lastError_;
-        logError(lastError_);
-    }
-    catch (...)
-    {
-        state_.store(State::Failed);
-        juce::ScopedLock l(statusLock_);
-        lastError_  = "Decode error (unknown)";
-        statusText_ = lastError_;
-        logError(lastError_);
+        statusText_ = "Generated \xe2\x80\x94 playing. Drag from Library into your DAW.";
     }
 }
 

@@ -6,8 +6,10 @@
 #include <atomic>
 #include <vector>
 
+#include "PluginPreview.h"
+
 class AcestepAudioProcessor : public juce::AudioProcessor,
-                              public juce::AsyncUpdater
+                               public juce::AsyncUpdater
 {
 public:
     // Submitting = running ace-lm (LLM step, text-to-music) or preparing cover request
@@ -103,18 +105,6 @@ private:
                              juce::File coverFile, float coverStrength, float bpm,
                              juce::String lyrics, int seed);
 
-    // Decode raw audio bytes and push to playback + loop buffers.
-    // If promptForLibrary is non-empty the result is saved to the library and
-    // state is set to Succeeded; otherwise (preview) only playback is updated.
-    void decodeAndPushAudio(const std::vector<uint8_t>& bytes,
-                            const juce::String& ext,
-                            const juce::String& promptForLibrary);
-
-    void pushSamplesToPlayback(const float* interleaved, int numFrames,
-                               int sourceChannels, double sourceSampleRate);
-    // Write to the inactive loop buffer and publish atomically (audio-thread safe).
-    void setLoopData(const float* interleaved, int numFrames);
-
     // ── Settings paths ────────────────────────────────────────────────────────
     mutable juce::CriticalSection pathsLock_;
     juce::String binariesPath_, modelsPath_, outputPath_;
@@ -127,45 +117,17 @@ private:
     // ── BPM from DAW playhead ─────────────────────────────────────────────────
     std::atomic<double> hostBpm_{ 0.0 };
 
-    // ── One-shot playback FIFO ────────────────────────────────────────────────
-    // ~24 s of stereo audio at 44.1 kHz (2^20 frames × 2 channels × 4 bytes = 8 MB)
-    static constexpr int kPlaybackFifoFrames = 1 << 20;
-    juce::AbstractFifo   playbackFifo_{ kPlaybackFifoFrames };
-    std::vector<float>   playbackBuffer_;         // interleaved stereo, kPlaybackFifoFrames*2
-    std::atomic<bool>    playbackBufferReady_{ false };
-
-    // Double-buffer handoff: message thread → audio thread
-    std::vector<float>   pendingPlaybackBuf_[2];
-    std::atomic<int>     pendingPlaybackFrames_{ 0 };
-    std::atomic<int>     pendingPlaybackBufIdx_{ 0 };
-    std::atomic<int>     nextWriteIdx_{ 0 };
-    std::atomic<bool>    pendingPlaybackReady_{ false };
-
-    // ── Loop playback (double-buffered, audio-thread safe) ────────────────────
-    // The message thread always writes to the INACTIVE slot and then atomically
-    // publishes via loopBufActive_. The audio thread only reads the ACTIVE slot.
-    std::vector<float>   loopBuf_[2];
-    int                  loopFrames_[2]{ 0, 0 };  // frame counts for each slot
-    std::atomic<int>     loopBufActive_{ 0 };     // slot the audio thread reads
-    std::atomic<int>     nextLoopWrite_{ 0 };     // slot the message thread writes
-    std::atomic<int>     loopReadPos_{ 0 };
-    std::atomic<bool>    loopPlayback_{ false };
-
-    // ── Stop signal (audio thread polls) ─────────────────────────────────────
-    std::atomic<bool>    stopRequested_{ false };
-
-    // ── Host sample rate ──────────────────────────────────────────────────────
-    std::atomic<double>  sampleRate_{ 44100.0 };
+    // ── Audio preview (AudioTransportSource-backed, thread-safe) ─────────────
+    PluginPreview preview_;
+    std::atomic<bool> loopPlayback_{ false };
 
     // ── Pending generation result (background thread → message thread) ────────
-    mutable juce::CriticalSection pendingWavLock_;
-    std::vector<uint8_t> pendingWavBytes_;
-    juce::String         pendingAudioExt_;
-    juce::String         pendingPrompt_;
-
-    // ── Pending preview request (UI → message thread) ─────────────────────────
-    mutable juce::CriticalSection pendingPreviewLock_;
-    juce::File           pendingPreviewFile_;
+    // The generation thread copies the output file to the library directory and
+    // hands off the path via AsyncUpdater so the message thread can load it into
+    // the preview engine and start playback.
+    mutable juce::CriticalSection pendingLibraryFileLock_;
+    juce::File   pendingLibraryFile_;
+    juce::String pendingPrompt_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AcestepAudioProcessor)
 };

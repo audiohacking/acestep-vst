@@ -35,6 +35,7 @@ target_sources(AcestepVST
   PRIVATE
     PluginProcessor.cpp
     PluginEditor.cpp
+    PluginPreview.cpp
 )
 
 target_compile_definitions(AcestepVST
