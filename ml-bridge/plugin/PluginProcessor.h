@@ -77,6 +77,10 @@ public:
     juce::File getModelsDirectory()  const;
     juce::File getLibraryDirectory() const;  // where generated audio is saved
 
+    // Returns the directory inside the plugin bundle where ace-lm / ace-synth
+    // are embedded by the CI build (same folder as the plugin's own binary).
+    static juce::File getBundledBinariesDirectory();
+
     bool areBinariesReady() const;
 
     // ── State / status ────────────────────────────────────────────────────────

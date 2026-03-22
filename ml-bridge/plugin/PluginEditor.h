@@ -142,6 +142,7 @@ private:
 
     // ── Settings tab ──────────────────────────────────────────────────────────
     juce::Label      binPathLabel_;
+    juce::Label      binDetectedLabel_;   // shows the auto-detected bundled binary dir
     juce::TextEditor binPathEditor_;
     juce::TextButton binBrowseButton_   { "Browse\xe2\x80\xa6" };
     juce::Label      modelsPathLabel_;
