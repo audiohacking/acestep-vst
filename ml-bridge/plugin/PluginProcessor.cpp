@@ -119,6 +119,7 @@ void AcestepAudioProcessor::appendToLog(const juce::String& text)
     if (text.isEmpty()) return;
     juce::ScopedLock l(logLock_);
     pendingLog_ += text;
+    // Ensure the buffer always ends with a newline so log entries stay separated.
     if (!pendingLog_.endsWithChar('\n'))
         pendingLog_ += "\n";
 }

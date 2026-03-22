@@ -498,13 +498,12 @@ void AcestepAudioProcessorEditor::timerCallback()
 
     // Drain any new log lines from the processor and append them to the log editor.
     // Do this on every timer tick (4 Hz) so output is visible as soon as possible.
+    // The logEditor_ itself is cleared in onGenerateClicked() at the start of each
+    // generation; here we only ever append new content.
     {
         juce::String newLog = processorRef.getAndClearNewLog();
         if (newLog.isNotEmpty())
         {
-            // Ensure the Generate tab log area is cleared at the start of a new
-            // generation (the processor clears pendingLog_ at that point so we
-            // detect it via a "clear" sentinel embedded in the very first chunk).
             logEditor_.moveCaretToEnd();
             logEditor_.insertTextAtCaret(newLog);
             // Autoscroll to the last line so the user always sees the latest output.
@@ -693,10 +692,11 @@ void AcestepAudioProcessorEditor::onInsertDawClicked()
     if (!file.existsAsFile()) { showFeedback("File not found."); return; }
 
     // Initiate an OS-level external drag so the DAW can receive the audio clip.
-    // performExternalDragDropOfFiles works from a button-click context on all
-    // platforms (the button's onClick is dispatched inside a mouse-up event).
-    // If the drag is declined (e.g. desktop is unfocused), fall back to
-    // revealing the file so the user can drag it manually.
+    // performExternalDragDropOfFiles is called from a button-click context which
+    // is dispatched inside a mouse-up event; this works on macOS and Windows.
+    // On Linux the behaviour depends on the window manager / DAW.
+    // If the drag is declined, fall back to revealing the file so the user can
+    // drag it manually.
     const bool dragOk = juce::DragAndDropContainer::performExternalDragDropOfFiles(
         juce::StringArray(file.getFullPathName()),
         /*canMoveFiles=*/false,
