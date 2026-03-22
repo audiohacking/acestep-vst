@@ -19,6 +19,23 @@ static const juce::Colour err       { 0xffff6655 };
 } // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Audio format combo box helpers
+// ─────────────────────────────────────────────────────────────────────────────
+static constexpr int kFmtIdWav = 1;
+static constexpr int kFmtIdMp3 = 2;
+
+static AcestepAudioProcessor::AudioFormat audioFormatFromComboId(int id)
+{
+    return (id == kFmtIdMp3) ? AcestepAudioProcessor::AudioFormat::MP3
+                              : AcestepAudioProcessor::AudioFormat::WAV;
+}
+
+static int comboIdFromAudioFormat(AcestepAudioProcessor::AudioFormat fmt)
+{
+    return (fmt == AcestepAudioProcessor::AudioFormat::MP3) ? kFmtIdMp3 : kFmtIdWav;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Helper: configure a small text button
 // ─────────────────────────────────────────────────────────────────────────────
 static void styleSmallButton(juce::TextButton& b,
@@ -399,6 +416,15 @@ AcestepAudioProcessorEditor::AcestepAudioProcessorEditor(AcestepAudioProcessor& 
                                       juce::dontSendNotification);
     };
 
+    styleLabel(audioFormatLabel_);
+    audioFormatLabel_.setText("Output format:", juce::dontSendNotification);
+    addChildComponent(audioFormatLabel_);
+    audioFormatCombo_.addItem("WAV (48 kHz, lossless \xe2\x80\x94 recommended)", kFmtIdWav);
+    audioFormatCombo_.addItem("MP3 (lossy)",                                     kFmtIdMp3);
+    audioFormatCombo_.setColour(juce::ComboBox::backgroundColourId, AcestepColours::panel);
+    audioFormatCombo_.setColour(juce::ComboBox::textColourId,       AcestepColours::textMain);
+    addChildComponent(audioFormatCombo_);
+
     styleSmallButton(applySettingsButton_, AcestepColours::accent,
                      AcestepColours::accent.brighter(0.2f));
     applySettingsButton_.onClick = [this] { onApplySettingsClicked(); };
@@ -420,6 +446,9 @@ AcestepAudioProcessorEditor::AcestepAudioProcessorEditor(AcestepAudioProcessor& 
     binPathEditor_.setText(processorRef.getBinariesPath(), juce::dontSendNotification);
     modelsPathEditor_.setText(processorRef.getModelsPath(), juce::dontSendNotification);
     outputPathEditor_.setText(processorRef.getOutputPath(), juce::dontSendNotification);
+    audioFormatCombo_.setSelectedId(
+        comboIdFromAudioFormat(processorRef.getAudioFormat()),
+        juce::dontSendNotification);
 
     refreshLibraryCache();
     // Open Settings on first run (binaries not yet configured) so the user can
@@ -458,6 +487,9 @@ void AcestepAudioProcessorEditor::selectTab(int tab)
         binPathEditor_.setText(processorRef.getBinariesPath(), juce::dontSendNotification);
         modelsPathEditor_.setText(processorRef.getModelsPath(), juce::dontSendNotification);
         outputPathEditor_.setText(processorRef.getOutputPath(), juce::dontSendNotification);
+        audioFormatCombo_.setSelectedId(
+            comboIdFromAudioFormat(processorRef.getAudioFormat()),
+            juce::dontSendNotification);
     }
     resized();
     repaint();
@@ -740,6 +772,7 @@ void AcestepAudioProcessorEditor::onApplySettingsClicked()
     processorRef.setBinariesPath(binPathEditor_.getText().trim());
     processorRef.setModelsPath(modelsPathEditor_.getText().trim());
     processorRef.setOutputPath(outputPathEditor_.getText().trim());
+    processorRef.setAudioFormat(audioFormatFromComboId(audioFormatCombo_.getSelectedId()));
     showFeedback("Settings applied.");
     // Refresh library in case output path changed
     refreshLibraryCache();
@@ -889,6 +922,7 @@ void AcestepAudioProcessorEditor::hideAllTabComponents()
         &binPathLabel_, &binDetectedLabel_, &binPathEditor_, &binBrowseButton_,
         &modelsPathLabel_, &modelsPathEditor_, &modelsBrowseButton_,
         &outputPathLabel_, &outputPathEditor_, &outputBrowseButton_,
+        &audioFormatLabel_, &audioFormatCombo_,
         &applySettingsButton_, &settingsInfoLabel_ })
     {
         c->setVisible(false);
@@ -1032,6 +1066,9 @@ void AcestepAudioProcessorEditor::layoutSettingsTab(juce::Rectangle<int> r)
     row = fieldRow();
     outputBrowseButton_.setVisible(true); outputBrowseButton_.setBounds(row.removeFromRight(80)); row.removeFromRight(4);
     outputPathEditor_.setVisible(true);   outputPathEditor_.setBounds(row);
+
+    audioFormatLabel_.setVisible(true); audioFormatLabel_.setBounds(labelRow());
+    audioFormatCombo_.setVisible(true); audioFormatCombo_.setBounds(fieldRow());
 
     applySettingsButton_.setVisible(true); applySettingsButton_.setBounds(r.removeFromTop(28));
     r.removeFromTop(8);

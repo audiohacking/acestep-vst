@@ -172,6 +172,16 @@ juce::String AcestepAudioProcessor::getOutputPath() const
     juce::ScopedLock l(pathsLock_); return outputPath_;
 }
 
+void AcestepAudioProcessor::setAudioFormat(AudioFormat fmt)
+{
+    { juce::ScopedLock l(pathsLock_); audioFormat_ = fmt; }
+    saveSettingsToGlobalConfig();
+}
+AcestepAudioProcessor::AudioFormat AcestepAudioProcessor::getAudioFormat() const
+{
+    juce::ScopedLock l(pathsLock_); return audioFormat_;
+}
+
 juce::File AcestepAudioProcessor::getBundledBinariesDirectory()
 {
     // The CI build embeds ace-lm and ace-synth alongside the plugin's own binary
@@ -295,7 +305,8 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
 {
     // ── 1. Resolve binary and model directories ───────────────────────────────
     juce::String bp, mp;
-    { juce::ScopedLock l(pathsLock_); bp = binariesPath_; mp = modelsPath_; }
+    AudioFormat fmt;
+    { juce::ScopedLock l(pathsLock_); bp = binariesPath_; mp = modelsPath_; fmt = audioFormat_; }
 
     juce::File binDir = bp.isEmpty() ? getBundledBinariesDirectory() : juce::File(bp);
 
@@ -468,6 +479,11 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
     ditArgs.add("--embedding");  ditArgs.add(textEncoderModel.getFullPathName());
     ditArgs.add("--dit");        ditArgs.add(ditModel.getFullPathName());
     ditArgs.add("--vae");        ditArgs.add(vaeModel.getFullPathName());
+
+    // Request WAV output (48 kHz PCM) when the user has chosen WAV format.
+    // Without this flag ace-synth produces MP3 by default.
+    if (fmt == AudioFormat::WAV)
+        ditArgs.add("--wav");
 
     // Pass source audio for cover / repaint mode
     if (coverFile.existsAsFile())
@@ -709,11 +725,13 @@ bool AcestepAudioProcessor::importAudioFile(const juce::File& sourceFile)
 void AcestepAudioProcessor::saveSettingsToGlobalConfig() const
 {
     juce::String bp, mp, op;
-    { juce::ScopedLock l(pathsLock_); bp = binariesPath_; mp = modelsPath_; op = outputPath_; }
+    AudioFormat fmt;
+    { juce::ScopedLock l(pathsLock_); bp = binariesPath_; mp = modelsPath_; op = outputPath_; fmt = audioFormat_; }
     auto xml = std::make_unique<juce::XmlElement>("AcestepConfig");
     xml->setAttribute("binariesPath", bp);
     xml->setAttribute("modelsPath",   mp);
     xml->setAttribute("outputPath",   op);
+    xml->setAttribute("audioFormat",  fmt == AudioFormat::WAV ? "wav" : "mp3");
     juce::File cfg = getGlobalConfigFile();
     cfg.getParentDirectory().createDirectory();
     xml->writeTo(cfg);
@@ -730,6 +748,8 @@ void AcestepAudioProcessor::loadSettingsFromGlobalConfig()
         binariesPath_ = xml->getStringAttribute("binariesPath");
         modelsPath_   = xml->getStringAttribute("modelsPath");
         outputPath_   = xml->getStringAttribute("outputPath");
+        // Default to WAV when loading an old config that has no audioFormat key.
+        audioFormat_  = parseAudioFormat(xml->getStringAttribute("audioFormat", "wav"));
         logTrace("Global config loaded");
     }
 }
@@ -780,11 +800,13 @@ juce::AudioProcessorEditor* AcestepAudioProcessor::createEditor()
 void AcestepAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
     juce::String bp, mp, op;
-    { juce::ScopedLock l(pathsLock_); bp = binariesPath_; mp = modelsPath_; op = outputPath_; }
+    AudioFormat fmt;
+    { juce::ScopedLock l(pathsLock_); bp = binariesPath_; mp = modelsPath_; op = outputPath_; fmt = audioFormat_; }
     auto xml = std::make_unique<juce::XmlElement>("AcestepState");
     xml->setAttribute("binariesPath", bp);
     xml->setAttribute("modelsPath",   mp);
     xml->setAttribute("outputPath",   op);
+    xml->setAttribute("audioFormat",  fmt == AudioFormat::WAV ? "wav" : "mp3");
     copyXmlToBinary(*xml, destData);
 }
 
@@ -798,6 +820,7 @@ void AcestepAudioProcessor::setStateInformation(const void* data, int sizeInByte
             binariesPath_ = xml->getStringAttribute("binariesPath");
             modelsPath_   = xml->getStringAttribute("modelsPath");
             outputPath_   = xml->getStringAttribute("outputPath");
+            audioFormat_  = parseAudioFormat(xml->getStringAttribute("audioFormat", "wav"));
         }
         // Keep global config in sync so paths survive fresh projects too.
         saveSettingsToGlobalConfig();

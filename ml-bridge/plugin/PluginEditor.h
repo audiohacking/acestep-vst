@@ -153,6 +153,8 @@ private:
     juce::Label      outputPathLabel_;
     juce::TextEditor outputPathEditor_;
     juce::TextButton outputBrowseButton_{ "Browse\xe2\x80\xa6" };
+    juce::Label      audioFormatLabel_;
+    juce::ComboBox   audioFormatCombo_;
     juce::TextButton applySettingsButton_{ "Apply Settings" };
     juce::Label      settingsInfoLabel_;
 

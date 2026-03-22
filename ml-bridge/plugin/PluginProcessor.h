@@ -64,6 +64,14 @@ public:
                          const juce::String& lyrics = "[Instrumental]",
                          int   seed            = -1);
 
+    // ── Audio format ──────────────────────────────────────────────────────────
+    // WAV  → passes --wav to ace-synth (48 kHz PCM, lossless)
+    // MP3  → default ace-synth output (lossy)
+    enum class AudioFormat { WAV = 0, MP3 = 1 };
+
+    void setAudioFormat(AudioFormat fmt);
+    AudioFormat getAudioFormat() const;
+
     // ── Path configuration (persisted in DAW project state) ──────────────────
     void setBinariesPath(const juce::String& path);
     juce::String getBinariesPath() const;
@@ -117,6 +125,7 @@ private:
     // ── Settings paths ────────────────────────────────────────────────────────
     mutable juce::CriticalSection pathsLock_;
     juce::String binariesPath_, modelsPath_, outputPath_;
+    AudioFormat  audioFormat_{ AudioFormat::WAV };   // default WAV (48 kHz)
 
     // ── State machine ─────────────────────────────────────────────────────────
     std::atomic<State> state_{ State::Idle };
@@ -143,6 +152,11 @@ private:
     juce::String pendingLog_;
     void appendToLog(const juce::String& text);
     void clearLog();
+
+    static AudioFormat parseAudioFormat(const juce::String& s)
+    {
+        return (s == "mp3") ? AudioFormat::MP3 : AudioFormat::WAV;
+    }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AcestepAudioProcessor)
 };
