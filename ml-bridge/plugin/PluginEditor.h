@@ -115,7 +115,9 @@ private:
     juce::Slider     coverStrengthSlider_;
 
     juce::TextButton generateButton_{ "Generate" };
-    juce::Label      statusLabel_;
+    // Read-only multi-line log that shows all subprocess output (ace-lm / ace-synth)
+    // and status messages; autoscrolls to the last line on each update.
+    juce::TextEditor logEditor_;
 
     // ── Library tab ───────────────────────────────────────────────────────────
     juce::TextButton refreshLibButton_{ "Refresh" };
@@ -151,6 +153,8 @@ private:
     juce::Label      outputPathLabel_;
     juce::TextEditor outputPathEditor_;
     juce::TextButton outputBrowseButton_{ "Browse\xe2\x80\xa6" };
+    juce::Label      audioFormatLabel_;
+    juce::ComboBox   audioFormatCombo_;
     juce::TextButton applySettingsButton_{ "Apply Settings" };
     juce::Label      settingsInfoLabel_;
 

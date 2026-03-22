@@ -5,6 +5,10 @@
 PluginPreview::PluginPreview()
 {
     formatManager_.registerBasicFormats();
+    // Ensure the transport source is always prepared with safe defaults so that
+    // setSource() called from loadFile() will properly call prepareToPlay() on
+    // the reader source even if the DAW hasn't yet called prepareToPlay() on us.
+    transportSource_.prepareToPlay(512, 44100.0);
 }
 
 PluginPreview::~PluginPreview()
@@ -34,12 +38,20 @@ void PluginPreview::releaseResources()
 void PluginPreview::render(juce::AudioBuffer<float>& buffer)
 {
     // Use a try-lock so the audio thread never blocks waiting for the message
-    // thread (e.g. during loadFile).  If we can't take the lock we just leave
-    // the buffer as-is (it is already cleared by processBlock).
+    // thread (e.g. during loadFile).  If we can't take the lock, or nothing is
+    // loaded / playing, leave the buffer as-is so input audio passes through.
     const juce::ScopedTryLock tryLock(lock_);
     if (!tryLock.isLocked() || readerSource_ == nullptr)
         return;
 
+    // Only overwrite the buffer while a clip is actually playing.
+    // AudioTransportSource::getNextAudioBlock fills with silence when stopped,
+    // which would kill the pass-through signal, so we guard against that here.
+    if (!transportSource_.isPlaying())
+        return;
+
+    // Clear the input first so we output clean preview audio, not a mix.
+    buffer.clear();
     juce::AudioSourceChannelInfo info(&buffer, 0, buffer.getNumSamples());
     transportSource_.getNextAudioBlock(info);
 }

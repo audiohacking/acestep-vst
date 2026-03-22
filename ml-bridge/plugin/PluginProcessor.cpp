@@ -32,6 +32,13 @@ void writeToLogFile(const juce::String& message)
 void logError(const juce::String& msg) { writeToLogFile("ERROR: " + msg); }
 void logTrace(const juce::String& msg) { writeToLogFile("TRACE: " + msg); }
 
+// ── Readable timestamp ─────────────────────────────────────────────────────────
+
+static juce::String logTimestamp()
+{
+    return juce::Time::getCurrentTime().formatted("%H:%M:%S");
+}
+
 // ── State label ───────────────────────────────────────────────────────────────
 
 const char* stateToString(AcestepAudioProcessor::State s)
@@ -104,6 +111,34 @@ AcestepAudioProcessor::~AcestepAudioProcessor()
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+// Streaming log
+// ═════════════════════════════════════════════════════════════════════════════
+
+void AcestepAudioProcessor::appendToLog(const juce::String& text)
+{
+    if (text.isEmpty()) return;
+    juce::ScopedLock l(logLock_);
+    pendingLog_ += text;
+    // Ensure the buffer always ends with a newline so log entries stay separated.
+    if (!pendingLog_.endsWithChar('\n'))
+        pendingLog_ += "\n";
+}
+
+void AcestepAudioProcessor::clearLog()
+{
+    juce::ScopedLock l(logLock_);
+    pendingLog_.clear();
+}
+
+juce::String AcestepAudioProcessor::getAndClearNewLog()
+{
+    juce::ScopedLock l(logLock_);
+    juce::String result = pendingLog_;
+    pendingLog_.clear();
+    return result;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 // Path helpers
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -135,6 +170,16 @@ void AcestepAudioProcessor::setOutputPath(const juce::String& p)
 juce::String AcestepAudioProcessor::getOutputPath() const
 {
     juce::ScopedLock l(pathsLock_); return outputPath_;
+}
+
+void AcestepAudioProcessor::setAudioFormat(AudioFormat fmt)
+{
+    { juce::ScopedLock l(pathsLock_); audioFormat_ = fmt; }
+    saveSettingsToGlobalConfig();
+}
+AcestepAudioProcessor::AudioFormat AcestepAudioProcessor::getAudioFormat() const
+{
+    juce::ScopedLock l(pathsLock_); return audioFormat_;
 }
 
 juce::File AcestepAudioProcessor::getBundledBinariesDirectory()
@@ -211,7 +256,8 @@ void AcestepAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
 
     if (buffer.getNumChannels() == 0) return;
 
-    buffer.clear();
+    // Pass through the input audio unchanged when preview is not active.
+    // render() will clear and overwrite the buffer only while a clip is playing.
     preview_.render(buffer);
 }
 
@@ -236,6 +282,9 @@ void AcestepAudioProcessor::startGeneration(const juce::String& prompt,
         juce::ScopedLock l(statusLock_);
         statusText_ = stateToString(State::Submitting);
     }
+    // Clear the log so each generation starts with a fresh output panel.
+    clearLog();
+    appendToLog("[" + logTimestamp() + "] Starting generation\xe2\x80\xa6");
     triggerAsyncUpdate();
     std::thread t(&AcestepAudioProcessor::runGenerationThread, this,
                   prompt, durationSeconds, inferenceSteps,
@@ -256,7 +305,8 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
 {
     // ── 1. Resolve binary and model directories ───────────────────────────────
     juce::String bp, mp;
-    { juce::ScopedLock l(pathsLock_); bp = binariesPath_; mp = modelsPath_; }
+    AudioFormat fmt;
+    { juce::ScopedLock l(pathsLock_); bp = binariesPath_; mp = modelsPath_; fmt = audioFormat_; }
 
     juce::File binDir = bp.isEmpty() ? getBundledBinariesDirectory() : juce::File(bp);
 
@@ -360,6 +410,8 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
     }
     triggerAsyncUpdate();
 
+    appendToLog("[" + logTimestamp() + "] Running ace-lm (LLM step)\xe2\x80\xa6");
+
     juce::StringArray lmArgs;
     lmArgs.add(aceLm.getFullPathName());
     lmArgs.add("--request"); lmArgs.add(requestFile.getFullPathName());
@@ -373,12 +425,20 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
         lastError_ = "Failed to start ace-lm: " + aceLm.getFullPathName();
         statusText_ = lastError_;
         logError(lastError_);
+        appendToLog("[" + logTimestamp() + "] ERROR: " + lastError_);
         triggerAsyncUpdate();
         tmpDir.deleteRecursively();
         return;
     }
     lmProc.waitForProcessToFinish(kLmTimeoutMs);
+    {
+        // Capture all output produced by ace-lm and stream it to the log panel.
+        const juce::String lmOutput = lmProc.readAllProcessOutput().trimEnd();
+        if (lmOutput.isNotEmpty())
+            appendToLog(lmOutput);
+    }
     const int lmExit = static_cast<int>(lmProc.getExitCode());
+    appendToLog("[" + logTimestamp() + "] ace-lm exit=" + juce::String(lmExit));
     logTrace("ace-lm exit=" + juce::String(lmExit));
     if (lmExit != 0)
     {
@@ -411,7 +471,7 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
         juce::ScopedLock l(statusLock_);
         statusText_ = stateToString(State::Running);
     }
-    triggerAsyncUpdate();
+    appendToLog("[" + logTimestamp() + "] Running ace-synth (DiT+VAE step)\xe2\x80\xa6");
 
     juce::StringArray ditArgs;
     ditArgs.add(aceSynth.getFullPathName());
@@ -419,6 +479,11 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
     ditArgs.add("--embedding");  ditArgs.add(textEncoderModel.getFullPathName());
     ditArgs.add("--dit");        ditArgs.add(ditModel.getFullPathName());
     ditArgs.add("--vae");        ditArgs.add(vaeModel.getFullPathName());
+
+    // Request WAV output (48 kHz PCM) when the user has chosen WAV format.
+    // Without this flag ace-synth produces MP3 by default.
+    if (fmt == AudioFormat::WAV)
+        ditArgs.add("--wav");
 
     // Pass source audio for cover / repaint mode
     if (coverFile.existsAsFile())
@@ -435,12 +500,20 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
         lastError_ = "Failed to start ace-synth: " + aceSynth.getFullPathName();
         statusText_ = lastError_;
         logError(lastError_);
+        appendToLog("[" + logTimestamp() + "] ERROR: " + lastError_);
         triggerAsyncUpdate();
         tmpDir.deleteRecursively();
         return;
     }
     ditProc.waitForProcessToFinish(kDitTimeoutMs);
+    {
+        // Capture all output produced by ace-synth and stream it to the log panel.
+        const juce::String ditOutput = ditProc.readAllProcessOutput().trimEnd();
+        if (ditOutput.isNotEmpty())
+            appendToLog(ditOutput);
+    }
     const int ditExit = static_cast<int>(ditProc.getExitCode());
+    appendToLog("[" + logTimestamp() + "] ace-synth exit=" + juce::String(ditExit));
     logTrace("ace-synth exit=" + juce::String(ditExit));
     if (ditExit != 0)
     {
@@ -510,6 +583,8 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
     addToLibrary(destFile, prompt);
 
     logTrace("library file: " + destFile.getFullPathName());
+    appendToLog("[" + logTimestamp() + "] Generation complete \xe2\x80\x94 saved to: "
+                + destFile.getFileName());
 
     {
         juce::ScopedLock l(pendingLibraryFileLock_);
@@ -545,7 +620,13 @@ void AcestepAudioProcessor::previewLibraryEntry(const juce::File& file)
         return;
 
     if (!preview_.loadFile(file))
+    {
+        juce::ScopedLock l(statusLock_);
+        lastError_  = "Preview failed: could not load " + file.getFileName();
+        statusText_ = lastError_;
+        logError(lastError_);
         return;
+    }
 
     preview_.play(loopPlayback_.load(std::memory_order_relaxed));
     juce::ScopedLock l(statusLock_);
@@ -644,11 +725,13 @@ bool AcestepAudioProcessor::importAudioFile(const juce::File& sourceFile)
 void AcestepAudioProcessor::saveSettingsToGlobalConfig() const
 {
     juce::String bp, mp, op;
-    { juce::ScopedLock l(pathsLock_); bp = binariesPath_; mp = modelsPath_; op = outputPath_; }
+    AudioFormat fmt;
+    { juce::ScopedLock l(pathsLock_); bp = binariesPath_; mp = modelsPath_; op = outputPath_; fmt = audioFormat_; }
     auto xml = std::make_unique<juce::XmlElement>("AcestepConfig");
     xml->setAttribute("binariesPath", bp);
     xml->setAttribute("modelsPath",   mp);
     xml->setAttribute("outputPath",   op);
+    xml->setAttribute("audioFormat",  fmt == AudioFormat::WAV ? "wav" : "mp3");
     juce::File cfg = getGlobalConfigFile();
     cfg.getParentDirectory().createDirectory();
     xml->writeTo(cfg);
@@ -665,6 +748,8 @@ void AcestepAudioProcessor::loadSettingsFromGlobalConfig()
         binariesPath_ = xml->getStringAttribute("binariesPath");
         modelsPath_   = xml->getStringAttribute("modelsPath");
         outputPath_   = xml->getStringAttribute("outputPath");
+        // Default to WAV when loading an old config that has no audioFormat key.
+        audioFormat_  = parseAudioFormat(xml->getStringAttribute("audioFormat", "wav"));
         logTrace("Global config loaded");
     }
 }
@@ -715,11 +800,13 @@ juce::AudioProcessorEditor* AcestepAudioProcessor::createEditor()
 void AcestepAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
     juce::String bp, mp, op;
-    { juce::ScopedLock l(pathsLock_); bp = binariesPath_; mp = modelsPath_; op = outputPath_; }
+    AudioFormat fmt;
+    { juce::ScopedLock l(pathsLock_); bp = binariesPath_; mp = modelsPath_; op = outputPath_; fmt = audioFormat_; }
     auto xml = std::make_unique<juce::XmlElement>("AcestepState");
     xml->setAttribute("binariesPath", bp);
     xml->setAttribute("modelsPath",   mp);
     xml->setAttribute("outputPath",   op);
+    xml->setAttribute("audioFormat",  fmt == AudioFormat::WAV ? "wav" : "mp3");
     copyXmlToBinary(*xml, destData);
 }
 
@@ -733,6 +820,7 @@ void AcestepAudioProcessor::setStateInformation(const void* data, int sizeInByte
             binariesPath_ = xml->getStringAttribute("binariesPath");
             modelsPath_   = xml->getStringAttribute("modelsPath");
             outputPath_   = xml->getStringAttribute("outputPath");
+            audioFormat_  = parseAudioFormat(xml->getStringAttribute("audioFormat", "wav"));
         }
         // Keep global config in sync so paths survive fresh projects too.
         saveSettingsToGlobalConfig();
