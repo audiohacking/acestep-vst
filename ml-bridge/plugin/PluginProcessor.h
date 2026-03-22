@@ -120,7 +120,7 @@ public:
     double getHostBpm() const { return hostBpm_.load(std::memory_order_relaxed); }
 
     // ── Playback control ──────────────────────────────────────────────────────
-    void previewLibraryEntry(const juce::File& file); // load + play on msg thread
+    bool previewLibraryEntry(const juce::File& file); // load + play on msg thread; returns false on failure
     void stopPlayback();
     void setLoopPlayback(bool loop);
     bool isLoopPlayback() const { return loopPlayback_.load(); }

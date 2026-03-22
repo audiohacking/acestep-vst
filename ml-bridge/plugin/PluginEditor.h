@@ -25,20 +25,32 @@ private:
 };
 
 // ── Library list box (supports OS-level drag-to-DAW) ─────────────────────────
+// Mouse events on list rows are delivered to JUCE's internal ContentComponent,
+// not to the ListBox itself.  A DragHelper MouseListener registered with
+// addMouseListener(&dragHelper_, true) ensures we receive those nested events.
 class LibraryListBox : public juce::ListBox
 {
 public:
     LibraryListBox(AcestepAudioProcessorEditor& e, LibraryListModel& m);
-    void mouseDown(const juce::MouseEvent& e) override;
-    void mouseDrag(const juce::MouseEvent& e) override;
-    void mouseUp(const juce::MouseEvent& e)   override;
 
 private:
     AcestepAudioProcessorEditor& editor_;
-    bool dragStarted_{ false };
-    // Row captured at mouseDown — used as the drag source in mouseDrag so
-    // the source row doesn't change as the cursor moves during the drag.
-    int  dragRow_{ -1 };
+
+    // DragHelper is a friend so it can reach editor_ and getCachedLibrary().
+    struct DragHelper : public juce::MouseListener
+    {
+        explicit DragHelper(LibraryListBox& lb) : lb_(lb) {}
+        void mouseDown(const juce::MouseEvent& e) override;
+        void mouseDrag(const juce::MouseEvent& e) override;
+        void mouseUp  (const juce::MouseEvent&)   override;
+
+        LibraryListBox& lb_;
+        int  dragRow_{ -1 };
+        bool dragStarted_{ false };
+    };
+
+    friend struct DragHelper;
+    DragHelper dragHelper_{ *this };
 };
 
 // ══════════════════════════════════════════════════════════════════════════════

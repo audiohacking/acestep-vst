@@ -652,12 +652,12 @@ void AcestepAudioProcessor::setLoopPlayback(bool loop)
     preview_.setLooping(loop);
 }
 
-void AcestepAudioProcessor::previewLibraryEntry(const juce::File& file)
+bool AcestepAudioProcessor::previewLibraryEntry(const juce::File& file)
 {
     // Don't interrupt an active generation.
     const auto st = state_.load();
     if (st == State::Submitting || st == State::Running)
-        return;
+        return false;
 
     if (!preview_.loadFile(file))
     {
@@ -665,12 +665,13 @@ void AcestepAudioProcessor::previewLibraryEntry(const juce::File& file)
         lastError_  = "Preview failed: could not load " + file.getFileName();
         statusText_ = lastError_;
         logError(lastError_);
-        return;
+        return false;
     }
 
     preview_.play(loopPlayback_.load(std::memory_order_relaxed));
     juce::ScopedLock l(statusLock_);
     statusText_ = "Previewing \xe2\x80\x94 press Stop to stop.";
+    return true;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -753,8 +754,18 @@ bool AcestepAudioProcessor::importAudioFile(const juce::File& sourceFile)
     if (!sourceFile.existsAsFile()) return false;
     juce::String ext = sourceFile.getFileExtension().toLowerCase();
     if (ext != ".wav" && ext != ".mp3") return false;
-    juce::File dest = getLibraryDirectory().getChildFile(
-        "import_" + juce::Time::getCurrentTime().formatted("%Y%m%d_%H%M%S") + ext);
+
+    // Preserve the original filename; add a numeric suffix only if a file with
+    // the same name already exists in the library.  Cap the counter to avoid
+    // an unbounded loop if the filesystem or directory behaves unexpectedly.
+    juce::String baseName = sourceFile.getFileNameWithoutExtension();
+    juce::File dest = getLibraryDirectory().getChildFile(sourceFile.getFileName());
+    for (int counter = 1; dest.existsAsFile() && counter <= 1000; ++counter)
+        dest = getLibraryDirectory().getChildFile(
+            baseName + "_" + juce::String(counter) + ext);
+
+    if (dest.existsAsFile()) return false; // shouldn't happen, but guard against it
+
     return sourceFile.copyFileTo(dest);
 }
 

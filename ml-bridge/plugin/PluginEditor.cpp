@@ -129,55 +129,56 @@ LibraryListBox::LibraryListBox(AcestepAudioProcessorEditor& e, LibraryListModel&
     setRowHeight(28);
     setOutlineThickness(0);
     setColour(juce::ListBox::backgroundColourId, AcestepColours::panel);
+
+    // Register DragHelper as a listener for ALL nested component events.
+    // JUCE's ListBox routes row interactions through an internal ContentComponent,
+    // so the ListBox's own mouseDown/mouseDrag overrides never fire for row drags.
+    // wantsEventsForAllNestedComponents=true ensures we catch those events here.
+    addMouseListener(&dragHelper_, true);
 }
 
-void LibraryListBox::mouseDown(const juce::MouseEvent& e)
+// ── DragHelper — captures mouse events from nested components (row items) ─────
+
+void LibraryListBox::DragHelper::mouseDown(const juce::MouseEvent& e)
 {
-    // Record which row was pressed so that mouseDrag can start the OS drag
-    // from the correct source row even if the cursor has moved by then.
-    dragRow_ = getRowContainingPosition(e.x, e.y);
-    ListBox::mouseDown(e);
+    dragStarted_ = false;
+    // Translate event coordinates to the ListBox's own coordinate space so
+    // getRowContainingPosition() gives the correct row index.
+    const auto pos = e.getEventRelativeTo(&lb_).getPosition();
+    dragRow_ = lb_.getRowContainingPosition(pos.x, pos.y);
 }
 
-void LibraryListBox::mouseDrag(const juce::MouseEvent& e)
+void LibraryListBox::DragHelper::mouseDrag(const juce::MouseEvent& e)
 {
-    // Once the OS drag session is active, return early to suppress base-class
-    // handling that could change selection or scroll during the drag.
     if (dragStarted_) return;
 
-    if (e.getDistanceFromDragStart() < 10) { ListBox::mouseDrag(e); return; }
+    // Wait until the user has dragged a meaningful distance before starting.
+    if (e.getDistanceFromDragStart() < 10) return;
 
-    // Use the row recorded at mouseDown — not the current cursor position,
-    // which may have shifted to an adjacent row during the drag gesture.
-    if (dragRow_ < 0) { ListBox::mouseDrag(e); return; }
+    // dragRow_ was set at mouseDown; -1 means the click wasn't on a row.
+    if (dragRow_ < 0) return;
 
-    const auto& entries = editor_.getCachedLibrary();
-    if (dragRow_ >= static_cast<int>(entries.size())) { ListBox::mouseDrag(e); return; }
+    const auto& entries = lb_.editor_.getCachedLibrary();
+    if (dragRow_ >= static_cast<int>(entries.size())) return;
 
-    const juce::String path = entries[static_cast<size_t>(dragRow_)].file.getFullPathName();
-    if (path.isEmpty()) { ListBox::mouseDrag(e); return; }
+    const juce::String path =
+        entries[static_cast<size_t>(dragRow_)].file.getFullPathName();
+    if (path.isEmpty()) return;
 
-    auto* container  = juce::DragAndDropContainer::findParentDragContainerFor(this);
-    auto* editorComp = findParentComponentOfClass<AcestepAudioProcessorEditor>();
-    juce::Component* src = editorComp ? static_cast<juce::Component*>(editorComp)
-                                      : static_cast<juce::Component*>(this);
-
-    if (container && container->performExternalDragDropOfFiles(
-            juce::StringArray(path), /*canMoveFiles=*/false, src))
-    {
-        dragStarted_ = true;
-    }
-    else
-    {
-        ListBox::mouseDrag(e);
-    }
+    // Initiate the OS-level file drag.  Must be called from within a mouseDrag
+    // event handler — this listener fires synchronously during JUCE's dispatch.
+    const bool started = juce::DragAndDropContainer::performExternalDragDropOfFiles(
+        juce::StringArray(path), /*canMoveFiles=*/false, &lb_);
+    // Mark as started whether or not the platform drag succeeded so we don't
+    // spam repeated drag attempts within the same gesture.
+    dragStarted_ = true;
+    juce::ignoreUnused(started);
 }
 
-void LibraryListBox::mouseUp(const juce::MouseEvent& e)
+void LibraryListBox::DragHelper::mouseUp(const juce::MouseEvent&)
 {
     dragStarted_ = false;
     dragRow_     = -1;
-    ListBox::mouseUp(e);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -733,7 +734,8 @@ void AcestepAudioProcessorEditor::onPreviewClicked()
 {
     const int row = libraryList_.getSelectedRow();
     if (row < 0 || row >= static_cast<int>(libraryCache_.size())) return;
-    processorRef.previewLibraryEntry(libraryCache_[static_cast<size_t>(row)].file);
+    if (!processorRef.previewLibraryEntry(libraryCache_[static_cast<size_t>(row)].file))
+        showFeedback("Preview failed \xe2\x80\x94 file may be missing or unsupported.");
 }
 
 void AcestepAudioProcessorEditor::onStopClicked()
