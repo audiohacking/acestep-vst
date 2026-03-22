@@ -142,6 +142,7 @@ private:
     mutable juce::CriticalSection logLock_;
     juce::String pendingLog_;
     void appendToLog(const juce::String& text);
+    void clearLog();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AcestepAudioProcessor)
 };

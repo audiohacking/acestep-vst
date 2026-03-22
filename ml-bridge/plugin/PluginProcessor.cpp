@@ -124,6 +124,12 @@ void AcestepAudioProcessor::appendToLog(const juce::String& text)
         pendingLog_ += "\n";
 }
 
+void AcestepAudioProcessor::clearLog()
+{
+    juce::ScopedLock l(logLock_);
+    pendingLog_.clear();
+}
+
 juce::String AcestepAudioProcessor::getAndClearNewLog()
 {
     juce::ScopedLock l(logLock_);
@@ -240,7 +246,8 @@ void AcestepAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
 
     if (buffer.getNumChannels() == 0) return;
 
-    buffer.clear();
+    // Pass through the input audio unchanged when preview is not active.
+    // render() will clear and overwrite the buffer only while a clip is playing.
     preview_.render(buffer);
 }
 
@@ -266,7 +273,7 @@ void AcestepAudioProcessor::startGeneration(const juce::String& prompt,
         statusText_ = stateToString(State::Submitting);
     }
     // Clear the log so each generation starts with a fresh output panel.
-    { juce::ScopedLock l(logLock_); pendingLog_.clear(); }
+    clearLog();
     appendToLog("[" + logTimestamp() + "] Starting generation\xe2\x80\xa6");
     triggerAsyncUpdate();
     std::thread t(&AcestepAudioProcessor::runGenerationThread, this,
@@ -393,7 +400,6 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
     triggerAsyncUpdate();
 
     appendToLog("[" + logTimestamp() + "] Running ace-lm (LLM step)\xe2\x80\xa6");
-    triggerAsyncUpdate();
 
     juce::StringArray lmArgs;
     lmArgs.add(aceLm.getFullPathName());
@@ -455,7 +461,6 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
         statusText_ = stateToString(State::Running);
     }
     appendToLog("[" + logTimestamp() + "] Running ace-synth (DiT+VAE step)\xe2\x80\xa6");
-    triggerAsyncUpdate();
 
     juce::StringArray ditArgs;
     ditArgs.add(aceSynth.getFullPathName());
