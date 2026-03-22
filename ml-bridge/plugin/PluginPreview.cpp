@@ -5,10 +5,6 @@
 PluginPreview::PluginPreview()
 {
     formatManager_.registerBasicFormats();
-    // Ensure the transport source is always prepared with safe defaults so that
-    // setSource() called from loadFile() will properly call prepareToPlay() on
-    // the reader source even if the DAW hasn't yet called prepareToPlay() on us.
-    transportSource_.prepareToPlay(512, 44100.0);
 }
 
 PluginPreview::~PluginPreview()
@@ -19,17 +15,15 @@ PluginPreview::~PluginPreview()
 // ─────────────────────────────────────────────────────────────────────────────
 // AudioProcessor lifecycle
 
-void PluginPreview::prepareToPlay(double sampleRate, int samplesPerBlock)
+void PluginPreview::prepareToPlay(double sampleRate, int /*samplesPerBlock*/)
 {
     const juce::ScopedLock lock(lock_);
-    sampleRate_ = sampleRate > 0.0 ? sampleRate : 44100.0;
-    transportSource_.prepareToPlay(samplesPerBlock, sampleRate_);
+    outputSampleRate_ = sampleRate > 0.0 ? sampleRate : 44100.0;
 }
 
 void PluginPreview::releaseResources()
 {
-    const juce::ScopedLock lock(lock_);
-    transportSource_.releaseResources();
+    stop();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -37,23 +31,49 @@ void PluginPreview::releaseResources()
 
 void PluginPreview::render(juce::AudioBuffer<float>& buffer)
 {
-    // Use a try-lock so the audio thread never blocks waiting for the message
-    // thread (e.g. during loadFile).  If we can't take the lock, or nothing is
-    // loaded / playing, leave the buffer as-is so input audio passes through.
+    // Fast path: nothing loaded or stopped — leave the buffer untouched so
+    // the DAW's input audio passes through.
+    int pos = playPos_.load(std::memory_order_relaxed);
+    if (pos < 0)
+        return;
+
+    // Try to acquire the lock without blocking.  If the message thread is
+    // in the middle of loadFile() we skip this block rather than stalling.
     const juce::ScopedTryLock tryLock(lock_);
-    if (!tryLock.isLocked() || readerSource_ == nullptr)
+    if (!tryLock.isLocked() || numSamplesLoaded_ == 0)
         return;
 
-    // Only overwrite the buffer while a clip is actually playing.
-    // AudioTransportSource::getNextAudioBlock fills with silence when stopped,
-    // which would kill the pass-through signal, so we guard against that here.
-    if (!transportSource_.isPlaying())
-        return;
+    const int outChannels = buffer.getNumChannels();
+    const int outSamples  = buffer.getNumSamples();
+    const int srcChannels = audioData_.getNumChannels();
 
-    // Clear the input first so we output clean preview audio, not a mix.
     buffer.clear();
-    juce::AudioSourceChannelInfo info(&buffer, 0, buffer.getNumSamples());
-    transportSource_.getNextAudioBlock(info);
+
+    int written = 0;
+    while (written < outSamples)
+    {
+        if (pos >= numSamplesLoaded_)
+        {
+            if (looping_.load(std::memory_order_relaxed))
+                pos = 0;
+            else
+            {
+                playPos_.store(-1, std::memory_order_relaxed);
+                break;
+            }
+        }
+
+        const int toRead = juce::jmin(outSamples - written, numSamplesLoaded_ - pos);
+        for (int ch = 0; ch < outChannels; ++ch)
+            buffer.copyFrom(ch, written, audioData_, ch % srcChannels, pos, toRead);
+
+        written += toRead;
+        pos     += toRead;
+    }
+
+    // Persist the updated position (ignored if stop() set it to -1 concurrently).
+    if (playPos_.load(std::memory_order_relaxed) >= 0)
+        playPos_.store(pos, std::memory_order_relaxed);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -68,49 +88,87 @@ bool PluginPreview::loadFile(const juce::File& file)
     if (reader == nullptr)
         return false;
 
-    const double readerSampleRate = reader->sampleRate;
-    auto nextSource = std::make_unique<juce::AudioFormatReaderSource>(reader.release(), true);
+    const int    numCh      = juce::jmin(static_cast<int>(reader->numChannels), 2);
+    const int    numSamples = static_cast<int>(reader->lengthInSamples);
+    const double srcRate    = reader->sampleRate;
 
-    const juce::ScopedLock lock(lock_);
-    transportSource_.stop();
-    transportSource_.setSource(nullptr);
-    readerSource_.reset();
-    transportSource_.setSource(nextSource.get(), 0, nullptr, readerSampleRate);
-    readerSource_ = std::move(nextSource);
-    currentFile_  = file;
+    if (numSamples <= 0 || numCh <= 0)
+        return false;
+
+    // Decode the whole file into a local buffer (no lock needed — all local).
+    juce::AudioBuffer<float> srcBuf(numCh, numSamples);
+    reader->read(&srcBuf, 0, numSamples, 0, true, numCh > 1);
+    reader.reset(); // close the file handle
+
+    // Read the current output sample rate safely.
+    double outRate;
+    { const juce::ScopedLock lock(lock_); outRate = outputSampleRate_; }
+
+    // Resample if the file rate differs from the DAW rate (linear interpolation).
+    juce::AudioBuffer<float> outBuf;
+    if (std::abs(srcRate - outRate) < 1.0)
+    {
+        outBuf = std::move(srcBuf);
+    }
+    else
+    {
+        const double ratio  = outRate / srcRate;
+        const int    outLen = static_cast<int>(numSamples * ratio) + 2;
+        outBuf.setSize(numCh, outLen);
+
+        for (int ch = 0; ch < numCh; ++ch)
+        {
+            const float* src = srcBuf.getReadPointer(ch);
+            float*       dst = outBuf.getWritePointer(ch);
+            for (int i = 0; i < outLen; ++i)
+            {
+                const double srcIdx = i / ratio;
+                const int    s0     = static_cast<int>(srcIdx);
+                const double frac   = srcIdx - s0;
+                if (s0 + 1 < numSamples)
+                    dst[i] = static_cast<float>(src[s0] + frac * (src[s0 + 1] - src[s0]));
+                else if (s0 < numSamples)
+                    dst[i] = src[s0];
+                else
+                    dst[i] = 0.0f;
+            }
+        }
+    }
+
+    // Swap in the new buffer atomically under the lock.
+    {
+        const juce::ScopedLock lock(lock_);
+        playPos_.store(-1, std::memory_order_relaxed);
+        audioData_        = std::move(outBuf);
+        numSamplesLoaded_ = audioData_.getNumSamples();
+        currentFile_      = file;
+    }
     return true;
 }
 
 void PluginPreview::clear()
 {
     const juce::ScopedLock lock(lock_);
-    transportSource_.stop();
-    transportSource_.setSource(nullptr);
-    readerSource_.reset();
-    currentFile_ = juce::File();
+    playPos_.store(-1, std::memory_order_relaxed);
+    audioData_.setSize(0, 0);
+    numSamplesLoaded_ = 0;
+    currentFile_      = juce::File();
 }
 
 void PluginPreview::play(bool loop)
 {
-    const juce::ScopedLock lock(lock_);
-    if (readerSource_ == nullptr)
-        return;
-    readerSource_->setLooping(loop);
-    transportSource_.setPosition(0.0);
-    transportSource_.start();
+    looping_.store(loop, std::memory_order_relaxed);
+    playPos_.store(0, std::memory_order_relaxed);
 }
 
 void PluginPreview::stop()
 {
-    const juce::ScopedLock lock(lock_);
-    transportSource_.stop();
+    playPos_.store(-1, std::memory_order_relaxed);
 }
 
 void PluginPreview::setLooping(bool loop)
 {
-    const juce::ScopedLock lock(lock_);
-    if (readerSource_ != nullptr)
-        readerSource_->setLooping(loop);
+    looping_.store(loop, std::memory_order_relaxed);
 }
 
 void PluginPreview::revealToUser() const
@@ -126,13 +184,12 @@ void PluginPreview::revealToUser() const
 bool PluginPreview::hasLoadedFile() const
 {
     const juce::ScopedLock lock(lock_);
-    return readerSource_ != nullptr && currentFile_.existsAsFile();
+    return numSamplesLoaded_ > 0 && currentFile_.existsAsFile();
 }
 
 bool PluginPreview::isPlaying() const
 {
-    const juce::ScopedLock lock(lock_);
-    return transportSource_.isPlaying();
+    return playPos_.load(std::memory_order_relaxed) >= 0;
 }
 
 juce::String PluginPreview::getFilePath() const

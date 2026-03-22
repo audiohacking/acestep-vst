@@ -178,6 +178,20 @@ private:
     juce::String feedbackMsg_;
     int          feedbackCountdown_{ 0 };
 
+    // ── Insert-DAW drag helper ────────────────────────────────────────────────
+    // performExternalDragDropOfFiles() must be called from a mouseDrag event,
+    // not from onClick (mouse-up).  This listener watches the button and starts
+    // the OS-level file drag as soon as the user drags it far enough.
+    struct InsertDawDragListener : public juce::MouseListener
+    {
+        explicit InsertDawDragListener(AcestepAudioProcessorEditor& e) : editor_(e) {}
+        void mouseDrag(const juce::MouseEvent& e) override;
+        void mouseUp  (const juce::MouseEvent&)   override { dragStarted_ = false; }
+        AcestepAudioProcessorEditor& editor_;
+        bool dragStarted_{ false };
+    };
+    InsertDawDragListener insertDawDragListener_{ *this };
+
     // ── Internal actions ──────────────────────────────────────────────────────
     void onGenerateClicked();
     void onPreviewClicked();
@@ -186,6 +200,7 @@ private:
     void onUseAsRefClicked();
     void onImportClicked();
     void onInsertDawClicked();
+    void startInsertDawDrag();
     void onRevealClicked();
     void onApplySettingsClicked();
     void onBrowseRefClicked();

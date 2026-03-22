@@ -386,6 +386,9 @@ AcestepAudioProcessorEditor::AcestepAudioProcessorEditor(AcestepAudioProcessor& 
     };
     deleteButton_.onClick    = [this] { onDeleteClicked();    };
     useAsRefButton_.onClick  = [this] { onUseAsRefClicked();  };
+    // Insert into DAW: drag the button to the DAW timeline (mouseDrag path) or
+    // click to reveal the file in the file manager as a fallback (onClick path).
+    insertDawButton_.addMouseListener(&insertDawDragListener_, false);
     insertDawButton_.onClick = [this] { onInsertDawClicked(); };
     revealButton_.onClick    = [this] { onRevealClicked();    };
 
@@ -795,8 +798,45 @@ void AcestepAudioProcessorEditor::onImportClicked()
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Insert-DAW drag listener — fires during mouseDrag on insertDawButton_
+
+void AcestepAudioProcessorEditor::InsertDawDragListener::mouseDrag(const juce::MouseEvent& e)
+{
+    if (dragStarted_) return;
+    if (e.getDistanceFromDragStart() < 8) return;
+
+    dragStarted_ = true;
+    editor_.startInsertDawDrag();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+void AcestepAudioProcessorEditor::startInsertDawDrag()
+{
+    const int row = libraryList_.getSelectedRow();
+    if (row < 0 || row >= static_cast<int>(libraryCache_.size()))
+    {
+        showFeedback("Select a library entry first.");
+        return;
+    }
+    const juce::File& file = libraryCache_[static_cast<size_t>(row)].file;
+    if (!file.existsAsFile()) { showFeedback("File not found."); return; }
+
+    // performExternalDragDropOfFiles must be called from a mouseDrag event
+    // (not mouseUp / onClick) so the OS sees an active drag in progress.
+    juce::DragAndDropContainer::performExternalDragDropOfFiles(
+        juce::StringArray(file.getFullPathName()),
+        /*canMoveFiles=*/false,
+        &insertDawButton_);
+}
+
 void AcestepAudioProcessorEditor::onInsertDawClicked()
 {
+    // onClick fires on mouseUp — too late for OS-level drag initiation.
+    // The drag is handled by InsertDawDragListener::mouseDrag above.
+    // If the user just clicks (no drag), fall back to revealing the file so
+    // they can drag it from the file manager into the DAW.
     const int row = libraryList_.getSelectedRow();
     if (row < 0 || row >= static_cast<int>(libraryCache_.size()))
     {
@@ -805,24 +845,9 @@ void AcestepAudioProcessorEditor::onInsertDawClicked()
     const juce::File& file = libraryCache_[static_cast<size_t>(row)].file;
     if (!file.existsAsFile()) { showFeedback("File not found."); return; }
 
-    // Initiate an OS-level external drag so the DAW can receive the audio clip.
-    // performExternalDragDropOfFiles is called from a button-click context which
-    // is dispatched inside a mouse-up event; this works on macOS and Windows.
-    // On Linux the behaviour depends on the window manager / DAW.
-    // If the drag is declined, fall back to revealing the file so the user can
-    // drag it manually.
-    const bool dragOk = juce::DragAndDropContainer::performExternalDragDropOfFiles(
-        juce::StringArray(file.getFullPathName()),
-        /*canMoveFiles=*/false,
-        &insertDawButton_);
-
-    if (!dragOk)
-    {
-        // Fallback: open Finder/Explorer and copy path to clipboard.
-        file.revealToUser();
-        juce::SystemClipboard::copyTextToClipboard(file.getFullPathName());
-        showFeedback("Revealed in file manager \xe2\x80\x94 drag into your DAW. Path also copied.");
-    }
+    file.revealToUser();
+    juce::SystemClipboard::copyTextToClipboard(file.getFullPathName());
+    showFeedback("Drag the Insert button into your DAW, or drag from file manager.");
 }
 
 void AcestepAudioProcessorEditor::onRevealClicked()
