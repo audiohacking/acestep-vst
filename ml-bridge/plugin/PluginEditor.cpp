@@ -276,11 +276,16 @@ AcestepAudioProcessorEditor::AcestepAudioProcessorEditor(AcestepAudioProcessor& 
     generateButton_.onClick = [this] { onGenerateClicked(); };
     addChildComponent(generateButton_);
 
-    statusLabel_.setColour(juce::Label::textColourId, AcestepColours::textDim);
-    statusLabel_.setFont(juce::Font(juce::FontOptions().withPointHeight(12.0f)));
-    statusLabel_.setJustificationType(juce::Justification::topLeft);
-    statusLabel_.setMinimumHorizontalScale(1.0f);
-    addChildComponent(statusLabel_);
+    // Multi-line log area: shows all ace-lm / ace-synth output, autoscrolls.
+    logEditor_.setMultiLine(true, false);
+    logEditor_.setReadOnly(true);
+    logEditor_.setScrollbarsShown(true);
+    logEditor_.setCaretVisible(false);
+    logEditor_.setColour(juce::TextEditor::backgroundColourId, AcestepColours::panel);
+    logEditor_.setColour(juce::TextEditor::textColourId,       AcestepColours::textDim);
+    logEditor_.setColour(juce::TextEditor::outlineColourId,    AcestepColours::accentDim);
+    logEditor_.setFont(juce::Font(juce::FontOptions().withPointHeight(11.0f)));
+    addChildComponent(logEditor_);
 
     // ── Library tab components ────────────────────────────────────────────────
     styleSmallButton(refreshLibButton_);
@@ -491,6 +496,22 @@ void AcestepAudioProcessorEditor::timerCallback()
     if (loopButton_.getToggleState() != processorRef.isLoopPlayback())
         loopButton_.setToggleState(processorRef.isLoopPlayback(), juce::dontSendNotification);
 
+    // Drain any new log lines from the processor and append them to the log editor.
+    // Do this on every timer tick (4 Hz) so output is visible as soon as possible.
+    {
+        juce::String newLog = processorRef.getAndClearNewLog();
+        if (newLog.isNotEmpty())
+        {
+            // Ensure the Generate tab log area is cleared at the start of a new
+            // generation (the processor clears pendingLog_ at that point so we
+            // detect it via a "clear" sentinel embedded in the very first chunk).
+            logEditor_.moveCaretToEnd();
+            logEditor_.insertTextAtCaret(newLog);
+            // Autoscroll to the last line so the user always sees the latest output.
+            logEditor_.moveCaretToEnd();
+        }
+    }
+
     // Refresh library cache once per second (4 Hz timer → every 4 ticks)
     ++libraryRefreshTick_;
     if (libraryRefreshTick_ >= 4)
@@ -520,28 +541,20 @@ void AcestepAudioProcessorEditor::updateStatusFromProcessor()
 {
     const auto state = processorRef.getState();
 
-    // Engine readiness
+    // Engine readiness (shown in the header, always visible)
     if (processorRef.areBinariesReady())
         engineStatusLabel_.setText("Engine: ready", juce::dontSendNotification);
     else if (state == AcestepAudioProcessor::State::Failed)
-        engineStatusLabel_.setText("Engine: error \xe2\x80\x94 see status", juce::dontSendNotification);
+        engineStatusLabel_.setText("Engine: error \xe2\x80\x94 see log", juce::dontSendNotification);
     else
         engineStatusLabel_.setText("Engine: binaries not found \xe2\x80\x94 see Settings",
                                    juce::dontSendNotification);
 
-    // Status label (with temporary feedback messages)
+    // Temporary feedback messages are shown in the engine status bar.
     if (feedbackCountdown_ > 0)
     {
-        statusLabel_.setText(feedbackMsg_, juce::dontSendNotification);
-        statusLabel_.setColour(juce::Label::textColourId, AcestepColours::ok);
+        engineStatusLabel_.setText(feedbackMsg_, juce::dontSendNotification);
         --feedbackCountdown_;
-    }
-    else
-    {
-        statusLabel_.setText(processorRef.getStatusText(), juce::dontSendNotification);
-        statusLabel_.setColour(juce::Label::textColourId,
-            state == AcestepAudioProcessor::State::Failed
-            ? AcestepColours::err : AcestepColours::textDim);
     }
 
     // Generate / preview buttons: disable while engine is busy
@@ -585,6 +598,9 @@ void AcestepAudioProcessorEditor::onGenerateClicked()
         coverFile     = juce::File(referenceAudioPath_);
         coverStrength = static_cast<float>(coverStrengthSlider_.getValue());
     }
+
+    // Clear the log editor now so the new generation starts fresh.
+    logEditor_.clear();
 
     processorRef.startGeneration(
         promptEditor_.getText(),
@@ -676,12 +692,23 @@ void AcestepAudioProcessorEditor::onInsertDawClicked()
     const juce::File& file = libraryCache_[static_cast<size_t>(row)].file;
     if (!file.existsAsFile()) { showFeedback("File not found."); return; }
 
-    // Reveal the file in Finder/Explorer so the user can drag it directly into
-    // the DAW timeline at the desired position. Also copy the path to the
-    // clipboard as a convenience fallback.
-    file.revealToUser();
-    juce::SystemClipboard::copyTextToClipboard(file.getFullPathName());
-    showFeedback("Revealed in file manager \xe2\x80\x94 drag into your DAW timeline. Path also copied.");
+    // Initiate an OS-level external drag so the DAW can receive the audio clip.
+    // performExternalDragDropOfFiles works from a button-click context on all
+    // platforms (the button's onClick is dispatched inside a mouse-up event).
+    // If the drag is declined (e.g. desktop is unfocused), fall back to
+    // revealing the file so the user can drag it manually.
+    const bool dragOk = juce::DragAndDropContainer::performExternalDragDropOfFiles(
+        juce::StringArray(file.getFullPathName()),
+        /*canMoveFiles=*/false,
+        &insertDawButton_);
+
+    if (!dragOk)
+    {
+        // Fallback: open Finder/Explorer and copy path to clipboard.
+        file.revealToUser();
+        juce::SystemClipboard::copyTextToClipboard(file.getFullPathName());
+        showFeedback("Revealed in file manager \xe2\x80\x94 drag into your DAW. Path also copied.");
+    }
 }
 
 void AcestepAudioProcessorEditor::onRevealClicked()
@@ -852,7 +879,7 @@ void AcestepAudioProcessorEditor::hideAllTabComponents()
         &genModeButton_, &coverModeButton_,
         &refFileLabel_, &browseRefButton_, &clearRefButton_,
         &coverStrengthLabel_, &coverStrengthSlider_,
-        &generateButton_, &statusLabel_,
+        &generateButton_, &logEditor_,
         &refreshLibButton_, &importButton_,
         &libraryList_,
         &previewButton_, &stopButton_, &loopButton_,
@@ -952,9 +979,9 @@ void AcestepAudioProcessorEditor::layoutGenerateTab(juce::Rectangle<int> r)
     generateButton_.setBounds(r.removeFromTop(30));
     r.removeFromTop(6);
 
-    // Status — fill all remaining space (minimum 40px)
-    statusLabel_.setVisible(true);
-    statusLabel_.setBounds(r.removeFromTop(juce::jmax(40, r.getHeight())));
+    // Log area — fill all remaining space (minimum 80px) to show subprocess output.
+    logEditor_.setVisible(true);
+    logEditor_.setBounds(r.removeFromTop(juce::jmax(80, r.getHeight())));
 }
 
 void AcestepAudioProcessorEditor::layoutLibraryTab(juce::Rectangle<int> r)

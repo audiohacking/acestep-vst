@@ -32,6 +32,13 @@ void writeToLogFile(const juce::String& message)
 void logError(const juce::String& msg) { writeToLogFile("ERROR: " + msg); }
 void logTrace(const juce::String& msg) { writeToLogFile("TRACE: " + msg); }
 
+// ── Readable timestamp ─────────────────────────────────────────────────────────
+
+static juce::String logTimestamp()
+{
+    return juce::Time::getCurrentTime().formatted("%H:%M:%S");
+}
+
 // ── State label ───────────────────────────────────────────────────────────────
 
 const char* stateToString(AcestepAudioProcessor::State s)
@@ -101,6 +108,27 @@ AcestepAudioProcessor::AcestepAudioProcessor()
 AcestepAudioProcessor::~AcestepAudioProcessor()
 {
     cancelPendingUpdate();
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Streaming log
+// ═════════════════════════════════════════════════════════════════════════════
+
+void AcestepAudioProcessor::appendToLog(const juce::String& text)
+{
+    if (text.isEmpty()) return;
+    juce::ScopedLock l(logLock_);
+    pendingLog_ += text;
+    if (!pendingLog_.endsWithChar('\n'))
+        pendingLog_ += "\n";
+}
+
+juce::String AcestepAudioProcessor::getAndClearNewLog()
+{
+    juce::ScopedLock l(logLock_);
+    juce::String result = pendingLog_;
+    pendingLog_.clear();
+    return result;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -236,6 +264,9 @@ void AcestepAudioProcessor::startGeneration(const juce::String& prompt,
         juce::ScopedLock l(statusLock_);
         statusText_ = stateToString(State::Submitting);
     }
+    // Clear the log so each generation starts with a fresh output panel.
+    { juce::ScopedLock l(logLock_); pendingLog_.clear(); }
+    appendToLog("[" + logTimestamp() + "] Starting generation\xe2\x80\xa6");
     triggerAsyncUpdate();
     std::thread t(&AcestepAudioProcessor::runGenerationThread, this,
                   prompt, durationSeconds, inferenceSteps,
@@ -360,6 +391,9 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
     }
     triggerAsyncUpdate();
 
+    appendToLog("[" + logTimestamp() + "] Running ace-lm (LLM step)\xe2\x80\xa6");
+    triggerAsyncUpdate();
+
     juce::StringArray lmArgs;
     lmArgs.add(aceLm.getFullPathName());
     lmArgs.add("--request"); lmArgs.add(requestFile.getFullPathName());
@@ -373,12 +407,20 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
         lastError_ = "Failed to start ace-lm: " + aceLm.getFullPathName();
         statusText_ = lastError_;
         logError(lastError_);
+        appendToLog("[" + logTimestamp() + "] ERROR: " + lastError_);
         triggerAsyncUpdate();
         tmpDir.deleteRecursively();
         return;
     }
     lmProc.waitForProcessToFinish(kLmTimeoutMs);
+    {
+        // Capture all output produced by ace-lm and stream it to the log panel.
+        const juce::String lmOutput = lmProc.readAllProcessOutput().trimEnd();
+        if (lmOutput.isNotEmpty())
+            appendToLog(lmOutput);
+    }
     const int lmExit = static_cast<int>(lmProc.getExitCode());
+    appendToLog("[" + logTimestamp() + "] ace-lm exit=" + juce::String(lmExit));
     logTrace("ace-lm exit=" + juce::String(lmExit));
     if (lmExit != 0)
     {
@@ -411,6 +453,7 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
         juce::ScopedLock l(statusLock_);
         statusText_ = stateToString(State::Running);
     }
+    appendToLog("[" + logTimestamp() + "] Running ace-synth (DiT+VAE step)\xe2\x80\xa6");
     triggerAsyncUpdate();
 
     juce::StringArray ditArgs;
@@ -435,12 +478,20 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
         lastError_ = "Failed to start ace-synth: " + aceSynth.getFullPathName();
         statusText_ = lastError_;
         logError(lastError_);
+        appendToLog("[" + logTimestamp() + "] ERROR: " + lastError_);
         triggerAsyncUpdate();
         tmpDir.deleteRecursively();
         return;
     }
     ditProc.waitForProcessToFinish(kDitTimeoutMs);
+    {
+        // Capture all output produced by ace-synth and stream it to the log panel.
+        const juce::String ditOutput = ditProc.readAllProcessOutput().trimEnd();
+        if (ditOutput.isNotEmpty())
+            appendToLog(ditOutput);
+    }
     const int ditExit = static_cast<int>(ditProc.getExitCode());
+    appendToLog("[" + logTimestamp() + "] ace-synth exit=" + juce::String(ditExit));
     logTrace("ace-synth exit=" + juce::String(ditExit));
     if (ditExit != 0)
     {
@@ -510,6 +561,8 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
     addToLibrary(destFile, prompt);
 
     logTrace("library file: " + destFile.getFullPathName());
+    appendToLog("[" + logTimestamp() + "] Generation complete \xe2\x80\x94 saved to: "
+                + destFile.getFileName());
 
     {
         juce::ScopedLock l(pendingLibraryFileLock_);
@@ -545,7 +598,13 @@ void AcestepAudioProcessor::previewLibraryEntry(const juce::File& file)
         return;
 
     if (!preview_.loadFile(file))
+    {
+        juce::ScopedLock l(statusLock_);
+        lastError_  = "Preview failed: could not load " + file.getFileName();
+        statusText_ = lastError_;
+        logError(lastError_);
         return;
+    }
 
     preview_.play(loopPlayback_.load(std::memory_order_relaxed));
     juce::ScopedLock l(statusLock_);

@@ -88,6 +88,11 @@ public:
     juce::String getStatusText() const;
     juce::String getLastError()  const;
 
+    // ── Streaming log (background thread writes; message thread drains) ───────
+    // Returns any new log lines appended since the last call, then clears the
+    // pending buffer. Safe to call from the message thread at any frequency.
+    juce::String getAndClearNewLog();
+
     // ── Host BPM — updated every processBlock() from the DAW playhead ─────────
     double getHostBpm() const { return hostBpm_.load(std::memory_order_relaxed); }
 
@@ -131,6 +136,12 @@ private:
     // the preview engine and start playback.
     mutable juce::CriticalSection pendingLibraryFileLock_;
     juce::File   pendingLibraryFile_;
+
+    // ── Streaming log ─────────────────────────────────────────────────────────
+    // Background thread appends lines; message thread drains via getAndClearNewLog().
+    mutable juce::CriticalSection logLock_;
+    juce::String pendingLog_;
+    void appendToLog(const juce::String& text);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AcestepAudioProcessor)
 };

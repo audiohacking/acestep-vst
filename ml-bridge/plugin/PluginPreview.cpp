@@ -5,6 +5,10 @@
 PluginPreview::PluginPreview()
 {
     formatManager_.registerBasicFormats();
+    // Ensure the transport source is always prepared with safe defaults so that
+    // setSource() called from loadFile() will properly call prepareToPlay() on
+    // the reader source even if the DAW hasn't yet called prepareToPlay() on us.
+    transportSource_.prepareToPlay(512, 44100.0);
 }
 
 PluginPreview::~PluginPreview()
