@@ -182,6 +182,28 @@ AcestepAudioProcessor::AudioFormat AcestepAudioProcessor::getAudioFormat() const
     juce::ScopedLock l(pathsLock_); return audioFormat_;
 }
 
+void AcestepAudioProcessor::setDitModel(DitModel m)
+{
+    { juce::ScopedLock l(pathsLock_); ditModel_ = m; }
+    saveSettingsToGlobalConfig();
+}
+AcestepAudioProcessor::DitModel AcestepAudioProcessor::getDitModel() const
+{
+    juce::ScopedLock l(pathsLock_); return ditModel_;
+}
+
+juce::String AcestepAudioProcessor::ditModelFilename(DitModel m)
+{
+    switch (m)
+    {
+    case DitModel::Turbo: return "acestep-v15-turbo-Q8_0.gguf";
+    case DitModel::Sft:   return "acestep-v15-sft-Q8_0.gguf";
+    case DitModel::Base:  return "acestep-v15-base-Q8_0.gguf";
+    }
+    jassertfalse; // unhandled DitModel variant
+    return "acestep-v15-turbo-Q8_0.gguf";
+}
+
 juce::File AcestepAudioProcessor::getBundledBinariesDirectory()
 {
     // The CI build embeds ace-lm and ace-synth alongside the plugin's own binary
@@ -267,9 +289,11 @@ void AcestepAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
 
 void AcestepAudioProcessor::startGeneration(const juce::String& prompt,
                                              int durationSeconds, int inferenceSteps,
-                                             juce::File coverFile, float coverStrength,
+                                             juce::File srcAudioFile, float coverStrength,
                                              float bpm,
-                                             const juce::String& lyrics, int seed)
+                                             const juce::String& lyrics, int seed,
+                                             DitModel ditModel,
+                                             const juce::String& legoTrack)
 {
     // Only one generation at a time.
     State expected = state_.load();
@@ -288,9 +312,9 @@ void AcestepAudioProcessor::startGeneration(const juce::String& prompt,
     triggerAsyncUpdate();
     std::thread t(&AcestepAudioProcessor::runGenerationThread, this,
                   prompt, durationSeconds, inferenceSteps,
-                  std::move(coverFile), coverStrength, bpm,
+                  std::move(srcAudioFile), coverStrength, bpm,
                   lyrics,
-                  seed);
+                  seed, ditModel, legoTrack);
     t.detach();
 }
 
@@ -299,9 +323,10 @@ void AcestepAudioProcessor::startGeneration(const juce::String& prompt,
 // ═════════════════════════════════════════════════════════════════════════════
 
 void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int durationSec,
-                                                 int inferenceSteps, juce::File coverFile,
+                                                 int inferenceSteps, juce::File srcAudioFile,
                                                  float coverStrength, float bpm,
-                                                 juce::String lyrics, int seed)
+                                                 juce::String lyrics, int seed,
+                                                 DitModel ditModel, juce::String legoTrack)
 {
     // ── 1. Resolve binary and model directories ───────────────────────────────
     juce::String bp, mp;
@@ -329,11 +354,16 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
     juce::File modelsDir        = mp.isEmpty() ? getModelsDirectory() : juce::File(mp);
     juce::File lmModel          = modelsDir.getChildFile("acestep-5Hz-lm-4B-Q8_0.gguf");
     juce::File textEncoderModel = modelsDir.getChildFile("Qwen3-Embedding-0.6B-Q8_0.gguf");
-    juce::File ditModel         = modelsDir.getChildFile("acestep-v15-turbo-Q8_0.gguf");
+
+    // Lego mode requires the base model regardless of the caller's ditModel choice.
+    const bool isLego = legoTrack.isNotEmpty();
+    const DitModel effectiveDitModel = isLego ? DitModel::Base : ditModel;
+    juce::File ditModelFile = modelsDir.getChildFile(ditModelFilename(effectiveDitModel));
+
     juce::File vaeModel         = modelsDir.getChildFile("vae-BF16.gguf");
 
     if (!lmModel.existsAsFile() || !textEncoderModel.existsAsFile()
-        || !ditModel.existsAsFile() || !vaeModel.existsAsFile())
+        || !ditModelFile.existsAsFile() || !vaeModel.existsAsFile())
     {
         state_.store(State::Failed);
         juce::ScopedLock l(statusLock_);
@@ -379,13 +409,22 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
         if (seed >= 0)
             obj->setProperty("seed", seed);
 
-        // Cover / repaint mode
-        const bool isCover = coverFile.existsAsFile();
-        if (isCover)
+        // Cover / repaint mode or Lego mode
+        const bool hasSrcAudio = srcAudioFile.existsAsFile();
+        if (isLego && hasSrcAudio)
         {
-            obj->setProperty("src_audio",      coverFile.getFullPathName());
-            obj->setProperty("cover_strength", juce::jlimit(0.0f, 1.0f, coverStrength));
-            obj->setProperty("task_type",      "cover");
+            // Lego: generate a new instrument track layered over a backing track.
+            // The "lego" field names the instrument to generate (e.g. "guitar").
+            obj->setProperty("src_audio", srcAudioFile.getFullPathName());
+            obj->setProperty("lego",      legoTrack);
+        }
+        else if (hasSrcAudio)
+        {
+            // Cover / repaint: transform the reference audio according to the prompt.
+            // audio_cover_strength is passed via JSON (not as a CLI flag).
+            obj->setProperty("src_audio",            srcAudioFile.getFullPathName());
+            obj->setProperty("audio_cover_strength", juce::jlimit(0.0f, 1.0f, coverStrength));
+            obj->setProperty("task_type",            "cover");
         }
 
         juce::String json = juce::JSON::toString(juce::var(obj));
@@ -477,7 +516,7 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
     ditArgs.add(aceSynth.getFullPathName());
     ditArgs.add("--request");    ditArgs.add(enrichedRequest.getFullPathName());
     ditArgs.add("--embedding");  ditArgs.add(textEncoderModel.getFullPathName());
-    ditArgs.add("--dit");        ditArgs.add(ditModel.getFullPathName());
+    ditArgs.add("--dit");        ditArgs.add(ditModelFile.getFullPathName());
     ditArgs.add("--vae");        ditArgs.add(vaeModel.getFullPathName());
 
     // Request WAV output (48 kHz PCM) when the user has chosen WAV format.
@@ -485,11 +524,12 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
     if (fmt == AudioFormat::WAV)
         ditArgs.add("--wav");
 
-    // Pass source audio for cover / repaint mode
-    if (coverFile.existsAsFile())
+    // Pass source audio for cover / repaint mode or lego mode.
+    // audio_cover_strength is already encoded in the JSON request — no CLI flag needed.
+    if (srcAudioFile.existsAsFile())
     {
-        ditArgs.add("--src-audio");      ditArgs.add(coverFile.getFullPathName());
-        ditArgs.add("--cover-strength"); ditArgs.add(juce::String(coverStrength, 2));
+        ditArgs.add("--src-audio");
+        ditArgs.add(srcAudioFile.getFullPathName());
     }
 
     juce::ChildProcess ditProc;
@@ -726,12 +766,15 @@ void AcestepAudioProcessor::saveSettingsToGlobalConfig() const
 {
     juce::String bp, mp, op;
     AudioFormat fmt;
-    { juce::ScopedLock l(pathsLock_); bp = binariesPath_; mp = modelsPath_; op = outputPath_; fmt = audioFormat_; }
+    DitModel dm;
+    { juce::ScopedLock l(pathsLock_); bp = binariesPath_; mp = modelsPath_; op = outputPath_; fmt = audioFormat_; dm = ditModel_; }
     auto xml = std::make_unique<juce::XmlElement>("AcestepConfig");
     xml->setAttribute("binariesPath", bp);
     xml->setAttribute("modelsPath",   mp);
     xml->setAttribute("outputPath",   op);
     xml->setAttribute("audioFormat",  fmt == AudioFormat::WAV ? "wav" : "mp3");
+    xml->setAttribute("ditModel",     dm == DitModel::Sft  ? "sft"
+                                    : dm == DitModel::Base ? "base" : "turbo");
     juce::File cfg = getGlobalConfigFile();
     cfg.getParentDirectory().createDirectory();
     xml->writeTo(cfg);
@@ -750,6 +793,7 @@ void AcestepAudioProcessor::loadSettingsFromGlobalConfig()
         outputPath_   = xml->getStringAttribute("outputPath");
         // Default to WAV when loading an old config that has no audioFormat key.
         audioFormat_  = parseAudioFormat(xml->getStringAttribute("audioFormat", "wav"));
+        ditModel_     = parseDitModel  (xml->getStringAttribute("ditModel",    "turbo"));
         logTrace("Global config loaded");
     }
 }
@@ -801,12 +845,15 @@ void AcestepAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
     juce::String bp, mp, op;
     AudioFormat fmt;
-    { juce::ScopedLock l(pathsLock_); bp = binariesPath_; mp = modelsPath_; op = outputPath_; fmt = audioFormat_; }
+    DitModel dm;
+    { juce::ScopedLock l(pathsLock_); bp = binariesPath_; mp = modelsPath_; op = outputPath_; fmt = audioFormat_; dm = ditModel_; }
     auto xml = std::make_unique<juce::XmlElement>("AcestepState");
     xml->setAttribute("binariesPath", bp);
     xml->setAttribute("modelsPath",   mp);
     xml->setAttribute("outputPath",   op);
     xml->setAttribute("audioFormat",  fmt == AudioFormat::WAV ? "wav" : "mp3");
+    xml->setAttribute("ditModel",     dm == DitModel::Sft  ? "sft"
+                                    : dm == DitModel::Base ? "base" : "turbo");
     copyXmlToBinary(*xml, destData);
 }
 
@@ -821,6 +868,7 @@ void AcestepAudioProcessor::setStateInformation(const void* data, int sizeInByte
             modelsPath_   = xml->getStringAttribute("modelsPath");
             outputPath_   = xml->getStringAttribute("outputPath");
             audioFormat_  = parseAudioFormat(xml->getStringAttribute("audioFormat", "wav"));
+            ditModel_     = parseDitModel  (xml->getStringAttribute("ditModel",    "turbo"));
         }
         // Keep global config in sync so paths survive fresh projects too.
         saveSettingsToGlobalConfig();

@@ -50,19 +50,34 @@ public:
     void saveSettingsToGlobalConfig() const;
     void loadSettingsFromGlobalConfig();
 
+    // ── DiT model selection ───────────────────────────────────────────────────
+    // Turbo = fast (default), Sft = fine-tuned quality, Base = base model
+    // (required for Lego mode — auto-selected when legoTrack is non-empty).
+    enum class DitModel { Turbo = 0, Sft = 1, Base = 2 };
+
+    void     setDitModel(DitModel m);
+    DitModel getDitModel() const;
+
+    static juce::String ditModelFilename(DitModel m);
+
     // ── Generation ────────────────────────────────────────────────────────────
-    // coverFile : non-empty → cover / repaint mode (pass --src-audio to ace-synth).
-    // bpm       : 0 = auto-detect from DAW playhead.
-    // lyrics    : lyrics text; use "[Instrumental]" for no vocals.
-    // seed      : -1 = random.
+    // srcAudioFile : non-empty → cover mode (repaint) or lego backing track.
+    // bpm          : 0 = auto-detect from DAW playhead.
+    // lyrics       : lyrics text; use "[Instrumental]" for no vocals.
+    // seed         : -1 = random.
+    // ditModel     : model variant; lego mode always forces Base.
+    // legoTrack    : non-empty → lego mode; value is the instrument track name
+    //                (e.g. "guitar").  Requires srcAudioFile to be set.
     void startGeneration(const juce::String& prompt,
                          int   durationSeconds = 10,
                          int   inferenceSteps  = 8,
-                         juce::File coverFile  = {},
+                         juce::File srcAudioFile = {},
                          float coverStrength   = 0.5f,
                          float bpm             = 0.0f,
-                         const juce::String& lyrics = "[Instrumental]",
-                         int   seed            = -1);
+                         const juce::String& lyrics    = "[Instrumental]",
+                         int   seed            = -1,
+                         DitModel ditModel     = DitModel::Turbo,
+                         const juce::String& legoTrack = {});
 
     // ── Audio format ──────────────────────────────────────────────────────────
     // WAV  → passes --wav to ace-synth (48 kHz PCM, lossless)
@@ -119,13 +134,15 @@ public:
 
 private:
     void runGenerationThread(juce::String prompt, int durationSec, int inferenceSteps,
-                             juce::File coverFile, float coverStrength, float bpm,
-                             juce::String lyrics, int seed);
+                             juce::File srcAudioFile, float coverStrength, float bpm,
+                             juce::String lyrics, int seed,
+                             DitModel ditModel, juce::String legoTrack);
 
     // ── Settings paths ────────────────────────────────────────────────────────
     mutable juce::CriticalSection pathsLock_;
     juce::String binariesPath_, modelsPath_, outputPath_;
     AudioFormat  audioFormat_{ AudioFormat::WAV };   // default WAV (48 kHz)
+    DitModel     ditModel_   { DitModel::Turbo  };   // default Turbo
 
     // ── State machine ─────────────────────────────────────────────────────────
     std::atomic<State> state_{ State::Idle };
@@ -156,6 +173,13 @@ private:
     static AudioFormat parseAudioFormat(const juce::String& s)
     {
         return (s == "mp3") ? AudioFormat::MP3 : AudioFormat::WAV;
+    }
+
+    static DitModel parseDitModel(const juce::String& s)
+    {
+        if (s == "sft")  return DitModel::Sft;
+        if (s == "base") return DitModel::Base;
+        return DitModel::Turbo;
     }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AcestepAudioProcessor)

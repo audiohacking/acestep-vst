@@ -101,10 +101,13 @@ private:
     juce::TextEditor seedEditor_;
     bool             bpmAutoUpdated_{ true };
 
-    // Mode buttons — Text-to-Music vs Cover
+    // Mode buttons — Text-to-Music, Cover, or Lego
     juce::TextButton genModeButton_  { "Text-to-Music" };
     juce::TextButton coverModeButton_{ "Cover Mode"    };
-    bool             coverModeActive_{ false };
+    juce::TextButton legoModeButton_ { "Lego"          };
+
+    enum class GenerationMode { TextToMusic, Cover, Lego };
+    GenerationMode generationMode_{ GenerationMode::TextToMusic };
 
     // Cover-mode-only controls
     juce::Label      refFileLabel_;
@@ -113,6 +116,14 @@ private:
     juce::String     referenceAudioPath_;
     juce::Label      coverStrengthLabel_;
     juce::Slider     coverStrengthSlider_;
+
+    // Lego-mode-only controls
+    juce::Label    legoTrackLabel_;
+    juce::ComboBox legoTrackCombo_;
+
+    // Model selector (applies to text-to-music and cover; lego always uses Base)
+    juce::Label    modelLabel_;
+    juce::ComboBox modelCombo_;
 
     juce::TextButton generateButton_{ "Generate" };
     // Read-only multi-line log that shows all subprocess output (ace-lm / ace-synth)
@@ -178,7 +189,7 @@ private:
     void onRevealClicked();
     void onApplySettingsClicked();
     void onBrowseRefClicked();
-    void setCoverMode(bool cover);
+    void setGenerationMode(GenerationMode mode);
     void updateStatusFromProcessor();
 
     // ── Layout helpers ────────────────────────────────────────────────────────
