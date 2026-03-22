@@ -333,6 +333,16 @@ AcestepAudioProcessorEditor::AcestepAudioProcessorEditor(AcestepAudioProcessor& 
     binPathLabel_.setText("Binaries directory (ace-lm, ace-synth):", juce::dontSendNotification);
     addChildComponent(binPathLabel_);
 
+    // Read-only label showing the directory the plugin will use automatically.
+    binDetectedLabel_.setColour(juce::Label::textColourId, AcestepColours::ok);
+    binDetectedLabel_.setFont(juce::Font(juce::FontOptions().withPointHeight(11.0f)));
+    binDetectedLabel_.setMinimumHorizontalScale(1.0f);
+    binDetectedLabel_.setJustificationType(juce::Justification::centredLeft);
+    binDetectedLabel_.setText(
+        "Bundled: " + AcestepAudioProcessor::getBundledBinariesDirectory().getFullPathName(),
+        juce::dontSendNotification);
+    addChildComponent(binDetectedLabel_);
+
     for (auto* te : { &binPathEditor_, &modelsPathEditor_, &outputPathEditor_ })
     {
         te->setColour(juce::TextEditor::backgroundColourId, AcestepColours::panel);
@@ -341,7 +351,7 @@ AcestepAudioProcessorEditor::AcestepAudioProcessorEditor(AcestepAudioProcessor& 
         addChildComponent(te);
     }
     binPathEditor_.setTextToShowWhenEmpty(
-        "Default: next to plugin bundle", AcestepColours::textDim);
+        "Leave empty to use bundled path shown above", AcestepColours::textDim);
     for (auto* b : { &binBrowseButton_, &modelsBrowseButton_, &outputBrowseButton_ })
     { styleSmallButton(*b); addChildComponent(b); }
 
@@ -394,8 +404,8 @@ AcestepAudioProcessorEditor::AcestepAudioProcessorEditor(AcestepAudioProcessor& 
     settingsInfoLabel_.setMinimumHorizontalScale(1.0f);
     settingsInfoLabel_.setJustificationType(juce::Justification::topLeft);
     settingsInfoLabel_.setText(
-        "Leave fields empty to use the defaults shown as hints.\n"
-        "Pre-built binaries: github.com/audiohacking/acestep.cpp/releases\n"
+        "Binaries (ace-lm, ace-synth) are bundled inside the plugin \xe2\x80\x94 no setup needed.\n"
+        "Override the path only for development or experimentation.\n"
         "Download models (~7.7 GB): cd vendor/acestep.cpp && ./models.sh",
         juce::dontSendNotification);
     addChildComponent(settingsInfoLabel_);
@@ -849,7 +859,7 @@ void AcestepAudioProcessorEditor::hideAllTabComponents()
         &deleteButton_, &useAsRefButton_,
         &insertDawButton_, &revealButton_,
         &libHintLabel_,
-        &binPathLabel_, &binPathEditor_, &binBrowseButton_,
+        &binPathLabel_, &binDetectedLabel_, &binPathEditor_, &binBrowseButton_,
         &modelsPathLabel_, &modelsPathEditor_, &modelsBrowseButton_,
         &outputPathLabel_, &outputPathEditor_, &outputBrowseButton_,
         &applySettingsButton_, &settingsInfoLabel_ })
@@ -980,7 +990,8 @@ void AcestepAudioProcessorEditor::layoutSettingsTab(juce::Rectangle<int> r)
     auto labelRow = [&]() -> juce::Rectangle<int> { auto rw = r.removeFromTop(16); r.removeFromTop(2); return rw; };
     auto fieldRow = [&]() -> juce::Rectangle<int> { auto rw = r.removeFromTop(24); r.removeFromTop(8); return rw; };
 
-    binPathLabel_.setVisible(true);  binPathLabel_.setBounds(labelRow());
+    binPathLabel_.setVisible(true);    binPathLabel_.setBounds(labelRow());
+    binDetectedLabel_.setVisible(true); binDetectedLabel_.setBounds(labelRow());
     auto row = fieldRow();
     binBrowseButton_.setVisible(true); binBrowseButton_.setBounds(row.removeFromRight(80)); row.removeFromRight(4);
     binPathEditor_.setVisible(true);   binPathEditor_.setBounds(row);

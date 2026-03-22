@@ -137,6 +137,18 @@ juce::String AcestepAudioProcessor::getOutputPath() const
     juce::ScopedLock l(pathsLock_); return outputPath_;
 }
 
+juce::File AcestepAudioProcessor::getBundledBinariesDirectory()
+{
+    // The CI build embeds ace-lm and ace-synth alongside the plugin's own binary
+    // inside the bundle (e.g. Contents/MacOS/ on macOS, Contents/x86_64-linux/
+    // on Linux, Contents/x86_64-win/ on Windows).  currentExecutableFile points
+    // at that binary, so its parent directory is exactly where the bundled
+    // binaries live.  (currentApplicationFile would point at the bundle root,
+    // whose parent is the folder *containing* the bundle — the wrong level.)
+    return juce::File::getSpecialLocation(juce::File::currentExecutableFile)
+               .getParentDirectory();
+}
+
 juce::File AcestepAudioProcessor::getModelsDirectory() const
 {
     juce::String mp;
@@ -162,9 +174,7 @@ bool AcestepAudioProcessor::areBinariesReady() const
 {
     juce::String bp;
     { juce::ScopedLock l(pathsLock_); bp = binariesPath_; }
-    juce::File binDir = bp.isEmpty()
-        ? juce::File::getSpecialLocation(juce::File::currentApplicationFile).getParentDirectory()
-        : juce::File(bp);
+    juce::File binDir = bp.isEmpty() ? getBundledBinariesDirectory() : juce::File(bp);
     return binDir.getChildFile(kAceLmName).existsAsFile()
         && binDir.getChildFile(kAceSynthName).existsAsFile();
 }
@@ -248,9 +258,7 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
     juce::String bp, mp;
     { juce::ScopedLock l(pathsLock_); bp = binariesPath_; mp = modelsPath_; }
 
-    juce::File binDir = bp.isEmpty()
-        ? juce::File::getSpecialLocation(juce::File::currentApplicationFile).getParentDirectory()
-        : juce::File(bp);
+    juce::File binDir = bp.isEmpty() ? getBundledBinariesDirectory() : juce::File(bp);
 
     juce::File aceLm    = binDir.getChildFile(kAceLmName);
     juce::File aceSynth = binDir.getChildFile(kAceSynthName);
@@ -259,9 +267,9 @@ void AcestepAudioProcessor::runGenerationThread(juce::String prompt, int duratio
     {
         state_.store(State::Failed);
         juce::ScopedLock l(statusLock_);
-        lastError_ = "Binaries not found in: " + binDir.getFullPathName()
-                   + "\nBuild: cmake -B vendor/acestep.cpp/build vendor/acestep.cpp"
-                   + " && cmake --build vendor/acestep.cpp/build --config Release";
+        lastError_ = "Bundled binaries not found in: " + binDir.getFullPathName()
+                   + "\nThe plugin bundle should include ace-lm and ace-synth."
+                   + "\nFor development, set a custom path in Settings.";
         statusText_ = lastError_;
         logError(lastError_);
         triggerAsyncUpdate();
