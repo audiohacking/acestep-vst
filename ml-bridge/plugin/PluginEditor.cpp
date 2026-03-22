@@ -35,6 +35,26 @@ static int comboIdFromAudioFormat(AcestepAudioProcessor::AudioFormat fmt)
     return (fmt == AcestepAudioProcessor::AudioFormat::MP3) ? kFmtIdMp3 : kFmtIdWav;
 }
 
+// DIT model combo box helpers
+// ─────────────────────────────────────────────────────────────────────────────
+static constexpr int kModelIdTurbo = 1;
+static constexpr int kModelIdSft   = 2;
+static constexpr int kModelIdBase  = 3;
+
+static AcestepAudioProcessor::DitModel ditModelFromComboId(int id)
+{
+    if (id == kModelIdSft)  return AcestepAudioProcessor::DitModel::Sft;
+    if (id == kModelIdBase) return AcestepAudioProcessor::DitModel::Base;
+    return AcestepAudioProcessor::DitModel::Turbo;
+}
+
+static int comboIdFromDitModel(AcestepAudioProcessor::DitModel m)
+{
+    if (m == AcestepAudioProcessor::DitModel::Sft)  return kModelIdSft;
+    if (m == AcestepAudioProcessor::DitModel::Base) return kModelIdBase;
+    return kModelIdTurbo;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper: configure a small text button
 // ─────────────────────────────────────────────────────────────────────────────
@@ -257,8 +277,11 @@ AcestepAudioProcessorEditor::AcestepAudioProcessorEditor(AcestepAudioProcessor& 
     addChildComponent(genModeButton_);
     styleSmallButton(coverModeButton_, AcestepColours::accentDim, AcestepColours::accent);
     addChildComponent(coverModeButton_);
-    genModeButton_.onClick   = [this] { setCoverMode(false); };
-    coverModeButton_.onClick = [this] { setCoverMode(true);  };
+    styleSmallButton(legoModeButton_, AcestepColours::accentDim, AcestepColours::accent);
+    addChildComponent(legoModeButton_);
+    genModeButton_.onClick   = [this] { setGenerationMode(GenerationMode::TextToMusic); };
+    coverModeButton_.onClick = [this] { setGenerationMode(GenerationMode::Cover);       };
+    legoModeButton_.onClick  = [this] { setGenerationMode(GenerationMode::Lego);        };
 
     // Cover-only controls
     styleLabel(refFileLabel_, 11.0f, AcestepColours::textDim);
@@ -286,6 +309,39 @@ AcestepAudioProcessorEditor::AcestepAudioProcessorEditor(AcestepAudioProcessor& 
     coverStrengthSlider_.setColour(juce::Slider::textBoxTextColourId,     AcestepColours::textMain);
     coverStrengthSlider_.setColour(juce::Slider::textBoxBackgroundColourId, AcestepColours::panel);
     addChildComponent(coverStrengthSlider_);
+
+    // Lego-only controls
+    styleLabel(legoTrackLabel_);
+    legoTrackLabel_.setText("Instrument:", juce::dontSendNotification);
+    addChildComponent(legoTrackLabel_);
+    for (const auto* name : { "vocals", "backing_vocals", "drums", "bass",
+                               "guitar", "keyboard", "percussion", "strings",
+                               "synth", "fx", "brass", "woodwinds" })
+    {
+        legoTrackCombo_.addItem(name, legoTrackCombo_.getNumItems() + 1);
+    }
+    legoTrackCombo_.setSelectedItemIndex(4, juce::dontSendNotification); // default: guitar
+    legoTrackCombo_.setColour(juce::ComboBox::backgroundColourId, AcestepColours::panel);
+    legoTrackCombo_.setColour(juce::ComboBox::textColourId,       AcestepColours::textMain);
+    addChildComponent(legoTrackCombo_);
+
+    // Model selector
+    styleLabel(modelLabel_);
+    modelLabel_.setText("Model:", juce::dontSendNotification);
+    addChildComponent(modelLabel_);
+    modelCombo_.addItem("Turbo (fast)",             kModelIdTurbo);
+    modelCombo_.addItem("SFT (quality)",            kModelIdSft);
+    modelCombo_.addItem("Base (lego / compatible)", kModelIdBase);
+    modelCombo_.setColour(juce::ComboBox::backgroundColourId, AcestepColours::panel);
+    modelCombo_.setColour(juce::ComboBox::textColourId,       AcestepColours::textMain);
+    // Sync initial selection from processor
+    modelCombo_.setSelectedId(comboIdFromDitModel(processorRef.getDitModel()),
+                              juce::dontSendNotification);
+    modelCombo_.onChange = [this] {
+        if (modelCombo_.isEnabled()) // don't clobber base when locked in lego mode
+            processorRef.setDitModel(ditModelFromComboId(modelCombo_.getSelectedId()));
+    };
+    addChildComponent(modelCombo_);
 
     styleSmallButton(generateButton_, AcestepColours::accent,
                      AcestepColours::accent.brighter(0.2f));
@@ -495,13 +551,22 @@ void AcestepAudioProcessorEditor::selectTab(int tab)
     repaint();
 }
 
-void AcestepAudioProcessorEditor::setCoverMode(bool cover)
+void AcestepAudioProcessorEditor::setGenerationMode(GenerationMode mode)
 {
-    coverModeActive_ = cover;
+    generationMode_ = mode;
     genModeButton_.setColour(juce::TextButton::buttonColourId,
-        !cover ? AcestepColours::accent : AcestepColours::accentDim);
+        mode == GenerationMode::TextToMusic ? AcestepColours::accent : AcestepColours::accentDim);
     coverModeButton_.setColour(juce::TextButton::buttonColourId,
-        cover  ? AcestepColours::accent : AcestepColours::accentDim);
+        mode == GenerationMode::Cover ? AcestepColours::accent : AcestepColours::accentDim);
+    legoModeButton_.setColour(juce::TextButton::buttonColourId,
+        mode == GenerationMode::Lego  ? AcestepColours::accent : AcestepColours::accentDim);
+
+    // In lego mode the base model is always required; lock the combo accordingly.
+    const bool isLego = (mode == GenerationMode::Lego);
+    modelCombo_.setEnabled(!isLego);
+    if (isLego)
+        modelCombo_.setSelectedId(kModelIdBase, juce::dontSendNotification);
+
     resized();
     repaint();
 }
@@ -622,13 +687,28 @@ void AcestepAudioProcessorEditor::onGenerateClicked()
 
     const juce::String lyrics = lyricsEditor_.getText().trim();
 
-    juce::File coverFile;
+    juce::File srcAudioFile;
     float coverStrength = 0.5f;
-    if (coverModeActive_ && referenceAudioPath_.isNotEmpty())
+    juce::String legoTrack;
+
+    if (generationMode_ == GenerationMode::Cover && referenceAudioPath_.isNotEmpty())
     {
-        coverFile     = juce::File(referenceAudioPath_);
+        srcAudioFile  = juce::File(referenceAudioPath_);
         coverStrength = static_cast<float>(coverStrengthSlider_.getValue());
     }
+    else if (generationMode_ == GenerationMode::Lego && referenceAudioPath_.isNotEmpty())
+    {
+        srcAudioFile = juce::File(referenceAudioPath_);
+        legoTrack    = legoTrackCombo_.getText();
+    }
+
+    // Resolve the selected model; lego always forces Base (processor handles it too,
+    // but pass the correct value for clarity).
+    AcestepAudioProcessor::DitModel ditModel =
+        (generationMode_ == GenerationMode::Lego)
+            ? AcestepAudioProcessor::DitModel::Base
+            : ditModelFromComboId(modelCombo_.getSelectedId());
+    processorRef.setDitModel(ditModel);
 
     // Clear the log editor now so the new generation starts fresh.
     logEditor_.clear();
@@ -637,11 +717,13 @@ void AcestepAudioProcessorEditor::onGenerateClicked()
         promptEditor_.getText(),
         durationSec > 0 ? durationSec : 10,
         steps       > 0 ? steps       : 8,
-        coverFile,
+        srcAudioFile,
         coverStrength,
         bpm > 0.0f ? bpm : static_cast<float>(processorRef.getHostBpm()),
         lyrics,
-        seed);
+        seed,
+        ditModel,
+        legoTrack);
 }
 
 void AcestepAudioProcessorEditor::onPreviewClicked()
@@ -688,7 +770,7 @@ void AcestepAudioProcessorEditor::onUseAsRefClicked()
     referenceAudioPath_ = libraryCache_[static_cast<size_t>(row)].file.getFullPathName();
     refFileLabel_.setText(libraryCache_[static_cast<size_t>(row)].file.getFileName(),
                           juce::dontSendNotification);
-    setCoverMode(true);
+    setGenerationMode(GenerationMode::Cover);
     selectTab(TabGenerate);
     showFeedback("Reference set \xe2\x80\x94 switched to Cover Mode.");
 }
@@ -832,7 +914,7 @@ void AcestepAudioProcessorEditor::filesDropped(const juce::StringArray& files, i
         // Set as cover reference
         referenceAudioPath_ = dropped.getFullPathName();
         refFileLabel_.setText(dropped.getFileName(), juce::dontSendNotification);
-        setCoverMode(true);
+        setGenerationMode(GenerationMode::Cover);
         showFeedback("Reference set: " + dropped.getFileName() + " \xe2\x80\x94 switched to Cover Mode.");
     }
     else if (currentTab_ == TabLibrary)
@@ -909,9 +991,11 @@ void AcestepAudioProcessorEditor::hideAllTabComponents()
         &lyricsLabel_, &lyricsEditor_,
         &durationLabel_, &durationCombo_, &stepsLabel_, &stepsCombo_,
         &bpmLabel_, &bpmEditor_, &seedLabel_, &seedEditor_,
-        &genModeButton_, &coverModeButton_,
+        &genModeButton_, &coverModeButton_, &legoModeButton_,
         &refFileLabel_, &browseRefButton_, &clearRefButton_,
         &coverStrengthLabel_, &coverStrengthSlider_,
+        &legoTrackLabel_, &legoTrackCombo_,
+        &modelLabel_, &modelCombo_,
         &generateButton_, &logEditor_,
         &refreshLibButton_, &importButton_,
         &libraryList_,
@@ -991,11 +1075,12 @@ void AcestepAudioProcessorEditor::layoutGenerateTab(juce::Rectangle<int> r)
 
     // Mode
     row = take(26);
-    genModeButton_.setVisible(true);   genModeButton_.setBounds(row.removeFromLeft(130)); row.removeFromLeft(4);
-    coverModeButton_.setVisible(true); coverModeButton_.setBounds(row.removeFromLeft(120));
+    genModeButton_.setVisible(true);   genModeButton_.setBounds(row.removeFromLeft(120)); row.removeFromLeft(4);
+    coverModeButton_.setVisible(true); coverModeButton_.setBounds(row.removeFromLeft(110)); row.removeFromLeft(4);
+    legoModeButton_.setVisible(true);  legoModeButton_.setBounds(row.removeFromLeft(70));
 
     // Cover-only controls
-    if (coverModeActive_)
+    if (generationMode_ == GenerationMode::Cover)
     {
         row = take(24);
         refFileLabel_.setVisible(true);   refFileLabel_.setBounds(row.removeFromLeft(r.getWidth() - 150)); row.removeFromLeft(4);
@@ -1006,6 +1091,25 @@ void AcestepAudioProcessorEditor::layoutGenerateTab(juce::Rectangle<int> r)
         coverStrengthLabel_.setVisible(true); coverStrengthLabel_.setBounds(row.removeFromLeft(120));
         coverStrengthSlider_.setVisible(true); coverStrengthSlider_.setBounds(row);
     }
+
+    // Lego-only controls
+    if (generationMode_ == GenerationMode::Lego)
+    {
+        row = take(24);
+        legoTrackLabel_.setVisible(true); legoTrackLabel_.setBounds(row.removeFromLeft(76)); row.removeFromLeft(4);
+        legoTrackCombo_.setVisible(true); legoTrackCombo_.setBounds(row.removeFromLeft(130)); row.removeFromLeft(8);
+        browseRefButton_.setVisible(true); browseRefButton_.setBounds(row.removeFromLeft(70)); row.removeFromLeft(4);
+        clearRefButton_.setVisible(true);  clearRefButton_.setBounds(row.removeFromLeft(50));
+        refFileLabel_.setVisible(true);
+        // show the ref label below if a file was selected
+        row = take(16);
+        refFileLabel_.setBounds(row);
+    }
+
+    // Model selector (available for all modes; disabled but locked to Base in lego mode)
+    row = take(24);
+    modelLabel_.setVisible(true); modelLabel_.setBounds(row.removeFromLeft(50)); row.removeFromLeft(4);
+    modelCombo_.setVisible(true); modelCombo_.setBounds(row.removeFromLeft(200));
 
     // Generate button
     r.removeFromTop(4);
